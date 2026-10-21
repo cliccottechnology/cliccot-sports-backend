@@ -13,6 +13,11 @@ class AttendanceRecord(models.Model):
     marked_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     locked = models.BooleanField(default=False)  # locked once session completed & reviewed
+    # When this mark is a make-up for a missed session, the original session is
+    # recorded here. The original absence keeps its own row on its own session,
+    # so the two are recorded separately and linked (never duplicated).
+    makeup_for = models.ForeignKey("training_sessions.Session", null=True, blank=True,
+                                   on_delete=models.SET_NULL, related_name="makeup_attendance")
 
     class Meta:
         unique_together = ("session", "student")

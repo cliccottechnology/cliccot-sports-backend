@@ -89,6 +89,7 @@ class ParentViewSet(GranularPermissions, viewsets.ModelViewSet):
 class StudentParentViewSet(viewsets.ModelViewSet):
     queryset = StudentParent.objects.select_related("student", "parent").all()
     serializer_class = StudentParentSerializer
+    module = "parents"
     permission_classes = [HasPerm("students.manage")]
     filterset_fields = ["student", "parent", "is_primary"]
 

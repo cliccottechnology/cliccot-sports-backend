@@ -1,8 +1,8 @@
-"""Role sessions: absolute 60-minute cap, no silent extension, parent isolation.
+"""Role sessions: absolute session cap, no silent extension, parent isolation.
 
 Lifetimes are settings-driven; these tests use short-circuit paths (crafted
-claims, blacklist, scoping) so nothing waits an hour. Production keeps
-ACCESS 15min / REFRESH 60min absolute.
+claims, blacklist, scoping) so nothing waits hours. The absolute cap is
+``settings.JWT_SESSION_MINUTES`` (default 12h).
 """
 import time
 
@@ -26,9 +26,11 @@ def password_client():
 @pytest.mark.django_db
 def test_login_issues_session_deadline(password_client):
     import time as _t
+    from django.conf import settings
     cl, data = password_client
+    minutes = int(getattr(settings, "JWT_SESSION_MINUTES", 720))
     assert "session_exp" in data and data["session_exp"]
-    assert 59 * 60 < data["session_exp"] - int(_t.time()) <= 60 * 60
+    assert (minutes - 1) * 60 < data["session_exp"] - int(_t.time()) <= minutes * 60
     assert cl.get("/api/auth/me/").status_code == 200
 
 

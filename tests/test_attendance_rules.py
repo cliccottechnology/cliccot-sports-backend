@@ -91,3 +91,66 @@ def test_corrections_require_auth():
     client = APIClient()
     r = client.get("/api/attendance/corrections/")
     assert r.status_code in (401, 403)
+
+
+def _link_parent(student, mobile="9000000001"):
+    from apps.accounts.models import Role, User
+    from apps.parents.models import Parent, StudentParent
+    role, _ = Role.objects.get_or_create(name="parent")
+    parent = Parent.objects.create(first_name="Mom", relationship="mother", mobile=mobile)
+    StudentParent.objects.create(student=student, parent=parent, is_primary=True)
+    return User.objects.create_user(username=f"att_parent_{student.pk}", password="pass12345",
+                                    role=role, parent_profile=parent, phone=mobile)
+
+
+def _bulk_mark(client, session, student, status):
+    return client.post("/api/attendance/bulk_mark/",
+                       {"session": session.pk, "items": [{"student": student.pk, "status": status}]},
+                       format="json")
+
+
+@pytest.mark.django_db
+def test_marking_present_notifies_linked_parent(rules_setup):
+    from apps.notifications.models import Notification
+    pu = _link_parent(rules_setup["student"])
+    client = APIClient()
+    client.force_authenticate(rules_setup["user"])
+    r = _bulk_mark(client, rules_setup["session"], rules_setup["student"], "present")
+    assert r.status_code == 200, r.content
+    notice = Notification.objects.filter(user=pu, title="Attendance: present")
+    assert notice.count() == 1
+    assert rules_setup["student"].first_name in notice.first().message
+
+
+@pytest.mark.django_db
+def test_present_remark_does_not_renotify(rules_setup):
+    from apps.notifications.models import Notification
+    pu = _link_parent(rules_setup["student"])
+    client = APIClient()
+    client.force_authenticate(rules_setup["user"])
+    _bulk_mark(client, rules_setup["session"], rules_setup["student"], "present")
+    _bulk_mark(client, rules_setup["session"], rules_setup["student"], "present")
+    assert Notification.objects.filter(user=pu, title="Attendance: present").count() == 1
+
+
+@pytest.mark.django_db
+def test_absence_does_not_notify_parent(rules_setup):
+    from apps.notifications.models import Notification
+    pu = _link_parent(rules_setup["student"])
+    client = APIClient()
+    client.force_authenticate(rules_setup["user"])
+    _bulk_mark(client, rules_setup["session"], rules_setup["student"], "absent")
+    assert Notification.objects.filter(user=pu).count() == 0
+
+
+@pytest.mark.django_db
+def test_present_notice_can_be_disabled(rules_setup):
+    from apps.academy.models import AcademySetting
+    from apps.notifications.models import Notification
+    pu = _link_parent(rules_setup["student"])
+    AcademySetting.objects.create(key="attendance.notify_parents_on_present", value=False)
+    client = APIClient()
+    client.force_authenticate(rules_setup["user"])
+    _bulk_mark(client, rules_setup["session"], rules_setup["student"], "present")
+    assert Notification.objects.filter(user=pu).count() == 0
+

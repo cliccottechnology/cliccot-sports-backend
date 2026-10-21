@@ -2,7 +2,7 @@
 
 Covers the acceptance criteria: independent parent/teacher logins, distinct
 token identities, cross-role API denial, parent-only endpoint lockdown,
-server-enforced 60-minute expiry, refresh, blacklist-based logout isolation,
+server-enforced absolute session expiry, refresh, blacklist-based logout isolation,
 and that the existing shared login keeps working unchanged.
 """
 import time
@@ -164,7 +164,7 @@ def test_parent_cannot_read_another_families_child_by_id():
     assert cl.get(f"/api/students/{other.id}/").status_code == 404
 
 
-# --- 6: server-enforced 60-minute expiry ------------------------------------
+# --- 6: server-enforced absolute session expiry -----------------------------
 
 @pytest.mark.django_db
 def test_parent_session_expiry_enforced_server_side():

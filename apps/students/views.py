@@ -9,22 +9,23 @@ from apps.common.permissions import GranularPermissions, HasAnyPerm, HasPerm
 from .models import EnrollmentHistory, Student, StudentCertificate, StudentDocument, StudentReferencePhoto
 
 
-def _cert_policy():
+def _cert_policy(school_id=None):
     """Academy certificate rules (Settings → Student Certificates).
 
-    Duration-only by default; thresholds apply only when configured.
+    Duration-only by default; thresholds apply only when configured. Resolved
+    per academy: an academy override wins, otherwise the platform default
+    applies — so one academy's thresholds never leak into another.
     """
-    from apps.academy.models import AcademySetting
-    rows = {s.key: s.value for s in AcademySetting.objects.filter(key__startswith="certificate.")}
+    from apps.academy.models import get_setting
 
     def num(key, default=None):
         try:
-            v = rows.get(key)
+            v = get_setting(key, school_id, None)
             return float(v) if v not in (None, "") else default
         except (TypeError, ValueError):
             return default
 
-    raw_active = rows.get("certificate.require_active", True)
+    raw_active = get_setting("certificate.require_active", school_id, True)
     return {
         "months": int(num("certificate.min_months", 3) or 3),
         "min_attendance_pct": num("certificate.min_attendance_pct"),
@@ -193,6 +194,9 @@ class StudentViewSet(GranularPermissions, viewsets.ModelViewSet):
         log_audit(self.request, "student.create", "students", f"student:{obj.pk}", new={"student_id": obj.student_id})
 
     def perform_update(self, serializer):
+        from apps.common.scope import ensure_school
+        if "school" in serializer.validated_data:
+            ensure_school(self.request, serializer.validated_data.get("school"))
         old_status = self.get_object().status
         obj = serializer.save()
         log_audit(self.request, "student.update", "students", f"student:{obj.pk}",
@@ -250,6 +254,7 @@ class StudentReferencePhotoViewSet(viewsets.ModelViewSet):
     """
     queryset = StudentReferencePhoto.objects.select_related("student").all().order_by("-created_at")
     serializer_class = StudentReferencePhotoSerializer
+    module = "students"
     filterset_fields = ["student", "is_active", "consent_given", "angle"]
 
     def get_permissions(self):
@@ -259,6 +264,12 @@ class StudentReferencePhotoViewSet(viewsets.ModelViewSet):
             # Managers (students.manage) or coaches enrolling their own athletes.
             return [IsAuthenticated()]
         return [HasPerm("students.manage")]
+
+    def get_queryset(self):
+        from apps.common.scope import scope_queryset, scope_to_parent
+        return scope_to_parent(
+            scope_queryset(super().get_queryset(), self.request.user, "student__school_id"),
+            self.request.user, "student_id")
 
     def perform_create(self, serializer):
         from django.utils import timezone
@@ -368,8 +379,7 @@ class StudentCertificateViewSet(GranularPermissions, viewsets.ModelViewSet):
         Only active-policy checks run; unapproved students are never issued here.
         """
         from datetime import date as d
-        from apps.common.scope import scope_queryset, scope_to_parent
-        policy = _cert_policy()
+        from apps.common.scope import scope_queryset, scope_to_parent, user_school_id
         today = d.today()
         qs = scope_to_parent(scope_queryset(
             Student.objects.select_related("sport").all(), request.user, "school_id"),
@@ -377,14 +387,25 @@ class StudentCertificateViewSet(GranularPermissions, viewsets.ModelViewSet):
         sport = request.query_params.get("sport")
         if sport:
             qs = qs.filter(sport_id=sport)
-        rows = [_eligibility_row(s, policy, today) for s in qs[:500]]
+        # Policy is per academy, so resolve it lazily per school (a super admin
+        # may span multiple academies) rather than applying one school's rules
+        # to everyone.
+        policy_cache: dict = {}
+
+        def policy_for(school_id):
+            if school_id not in policy_cache:
+                policy_cache[school_id] = _cert_policy(school_id)
+            return policy_cache[school_id]
+
+        rows = [_eligibility_row(s, policy_for(s.school_id), today) for s in qs[:500]]
         state = request.query_params.get("state")
         if state:
             rows = [r for r in rows if r["state"] == state]
         counts: dict = {}
         for r in rows:
             counts[r["state"]] = counts.get(r["state"], 0) + 1
-        return Response({"policy": policy, "counts": counts, "results": rows, "today": str(today)})
+        return Response({"policy": _cert_policy(user_school_id(request.user)),
+                         "counts": counts, "results": rows, "today": str(today)})
 
     @action(detail=False, methods=["post"])
     def issue(self, request):
@@ -394,11 +415,13 @@ class StudentCertificateViewSet(GranularPermissions, viewsets.ModelViewSet):
         student_id = request.data.get("student")
         if not student_id:
             return Response({"detail": "student is required."}, status=400)
-        try:
-            student = Student.objects.select_related("sport").get(pk=student_id)
-        except Student.DoesNotExist:
+        from apps.common.scope import scope_queryset, scope_to_parent
+        student = scope_to_parent(
+            scope_queryset(Student.objects.select_related("sport").all(), request.user, "school_id"),
+            request.user, "pk").filter(pk=student_id).first()
+        if not student:
             return Response({"detail": "Student not found."}, status=404)
-        policy = _cert_policy()
+        policy = _cert_policy(student.school_id)
         row = _eligibility_row(student, policy, d.today())
         if row["state"] not in ("eligible", "review"):
             return Response({"detail": "Student is not eligible for a certificate.",
@@ -416,9 +439,8 @@ class StudentCertificateViewSet(GranularPermissions, viewsets.ModelViewSet):
             description=request.data.get("description", ""),
             issued_by=request.user)
         try:
-            from apps.academy.models import AcademySetting
-            brow = AcademySetting.objects.filter(key="academy.name").first()
-            academy_name = (brow.value if brow and isinstance(brow.value, str) else None) or "HARI Sports Academy"
+            from apps.academy.models import get_setting
+            academy_name = get_setting("academy.name", student.school_id) or "HARI Sports Academy"
         except Exception:
             academy_name = "HARI Sports Academy"
         pdf = _render_student_certificate_pdf(cert, academy_name)

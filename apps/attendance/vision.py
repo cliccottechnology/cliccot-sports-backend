@@ -38,7 +38,13 @@ class AnalysisResult:
 class BaseVisionProvider:
     name = "base"
 
-    def analyze(self, image_file, roster_student_ids: list[int]) -> AnalysisResult:
+    def analyze(self, image_file, roster_student_ids: list[int],
+                session=None) -> AnalysisResult:
+        """Return per-student suggestions for a session group photo.
+
+        ``session`` is optional context (school/roster scoping) supplied by the
+        caller; providers that don't need it may ignore it.
+        """
         raise NotImplementedError
 
 
@@ -47,7 +53,8 @@ class PilotVisionProvider(BaseVisionProvider):
 
     name = "pilot"
 
-    def analyze(self, image_file, roster_student_ids: list[int]) -> AnalysisResult:
+    def analyze(self, image_file, roster_student_ids: list[int],
+                session=None) -> AnalysisResult:
         suggestions = [
             StudentSuggestion(
                 student_id=sid,
@@ -90,6 +97,11 @@ def hamming_hex(a: str, b: str) -> int:
 
 def get_provider() -> BaseVisionProvider:
     name = getattr(settings, "ATTENDANCE_VISION_PROVIDER", "pilot")
+    if name == "faceauth":
+        # Imported lazily so the AWS deps (boto3/numpy) are only required when
+        # real face matching is actually switched on.
+        from faceauth.attendance_provider import FaceVisionProvider
+        return FaceVisionProvider()
     cls = _PROVIDERS.get(name)
     if cls is None:
         raise ValueError(f"Unknown ATTENDANCE_VISION_PROVIDER: {name!r}")

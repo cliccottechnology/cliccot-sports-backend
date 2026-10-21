@@ -67,6 +67,59 @@ def test_payment_webhook_requires_signature(client):
 
 
 @pytest.mark.django_db
+def test_payment_webhook_valid_signature_marks_success(client, monkeypatch):
+    import hashlib
+    import hmac
+    from datetime import date
+
+    from apps.academy.models import Sport
+    from apps.fees.models import FeePlan, StudentFee
+    from apps.payments.models import Payment
+    from apps.students.models import Student
+    monkeypatch.setenv("MOCK_WEBHOOK_SECRET", "s3cret")
+    sport = Sport.objects.create(name="PW-Football", code="PWF")
+    st = Student.objects.create(student_id="PW-S1", first_name="S", enrollment_date=date.today(), sport=sport)
+    plan = FeePlan.objects.create(name="PW-Plan", cycle="monthly", amount=1000)
+    fee = StudentFee.objects.create(student=st, fee_plan=plan, period_label="2026-10", amount=1000, due_date=date.today())
+    pay = Payment.objects.create(student_fee=fee, amount=1000, provider="mock",
+                                 provider_order_id="mock_order_y", idempotency_key="k2", status="pending")
+    sig = hmac.new(b"s3cret", b"mock_order_yp1", hashlib.sha256).hexdigest()
+    r = client.post("/api/payments/webhook/",
+                    {"order_id": "mock_order_y", "payment_id": "p1", "signature": sig}, format="json")
+    assert r.status_code == 200, r.content
+    pay.refresh_from_db()
+    assert pay.status == "success"
+    assert pay.verified is True
+
+
+def test_mock_webhook_fails_closed_without_secret(monkeypatch):
+    from apps.payments.gateway import MockGateway
+    monkeypatch.delenv("MOCK_WEBHOOK_SECRET", raising=False)
+    assert MockGateway().verify_webhook(payload={"order_id": "o", "payment_id": "p"},
+                                        signature="whatever") is False
+
+
+def test_stripe_webhook_requires_real_signature(monkeypatch):
+    import hashlib
+    import hmac
+    import time
+
+    from apps.payments.gateway import StripeGateway
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
+    g = StripeGateway()
+    body = b'{"order_id":"o1","payment_id":"p1"}'
+    ts = str(int(time.time()))
+    good = hmac.new(b"whsec_test", f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
+    assert g.verify_webhook(payload={}, signature=f"t={ts},v1={good}", raw_body=body) is True
+    # Regression: any non-empty signature used to pass; now it must not.
+    assert g.verify_webhook(payload={}, signature="anything", raw_body=body) is False
+    assert g.verify_webhook(payload={}, signature=f"t={ts},v1=deadbeef", raw_body=body) is False
+    # Missing secret fails closed.
+    monkeypatch.delenv("STRIPE_WEBHOOK_SECRET", raising=False)
+    assert g.verify_webhook(payload={}, signature=f"t={ts},v1={good}", raw_body=body) is False
+
+
+@pytest.mark.django_db
 def test_trainer_fee_only_completed():
     from datetime import date, time
     from apps.academy.models import Sport, TrainingLocation
@@ -79,8 +132,10 @@ def test_trainer_fee_only_completed():
     coach = Coach.objects.create(trainer_id="F-1", first_name="C", phone="2", weekly_off_days=[5, 6])
     loc = TrainingLocation.objects.create(name="F-Loc")
     batch = Batch.objects.create(name="F-B", sport=sport, coach=coach, start_time=time(7, 0), end_time=time(8, 0), location=loc)
+    # Dates are relative to today so the rule is always effective on the
+    # session date (a hardcoded past date would fall outside the rule window).
     TrainerFeeRule.objects.create(trainer=coach, rate_per_session=500, effective_from=date.today())
-    sched = Session.objects.create(sport=sport, batch=batch, coach=coach, date=date(2026, 10, 14),
+    sched = Session.objects.create(sport=sport, batch=batch, coach=coach, date=date.today(),
                                    start_time=time(7, 0), end_time=time(8, 0), status="scheduled")
     assert compute_payables_for_session(sched) is None
     sched.status = "completed"

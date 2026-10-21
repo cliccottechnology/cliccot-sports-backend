@@ -48,6 +48,7 @@ class FeePlanViewSet(GranularPermissions, viewsets.ModelViewSet):
 class StudentFeeViewSet(viewsets.ModelViewSet):
     queryset = StudentFee.objects.select_related("student", "fee_plan", "batch").all().order_by("-due_date")
     serializer_class = StudentFeeSerializer
+    module = "fees"
     filterset_fields = ["student", "fee_plan", "batch", "status", "period_label"]
     search_fields = ["student__first_name", "student__student_id", "period_label"]
 
@@ -105,15 +106,18 @@ class StudentFeeViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def summary(self, request):
         """Counts + amounts by status, plus total collected and outstanding."""
+        from django.db.models import F
         from apps.payments.models import Payment
         qs = self.get_queryset()
         by_status = list(qs.values("status").annotate(count=Count("id"), amount=Sum("amount")).order_by("status"))
         collected = Payment.objects.filter(student_fee__in=qs, status="success").aggregate(t=Sum("amount"))["t"] or 0
-        billed = qs.aggregate(t=Sum("amount"))["t"] or 0
+        # Billed is net of discounts; otherwise a discounted fee reports its full
+        # face value as outstanding.
+        billed = qs.aggregate(t=Sum(F("amount") - F("discount")))["t"] or 0
         return Response({"by_status": by_status, "collected": float(collected),
                          "billed": float(billed), "outstanding": float(billed) - float(collected)})
 
-    @action(detail=False, methods=["post"], permission_classes=[HasPerm("fees.manage")])
+    @action(detail=False, methods=["post"], permission_classes=[HasPerm("fees.edit")])
     def mark_overdue(self, request):
         """Flip all past-due unpaid fees to overdue. Returns how many changed."""
         n = (self.get_queryset().filter(due_date__lt=date.today())

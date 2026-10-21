@@ -231,3 +231,74 @@ def test_16_data_preserved_and_hari_intact():
     u = mkuser("sa_check", role=sa)
     assert set(u.perm_codes()) >= {c for c, _, _ in ALL_CODES}
     assert User.objects.filter(username="sa_check").exists()
+
+
+@pytest.mark.django_db
+def test_users_endpoint_honours_granular_codes(hari):
+    """Roles store granular `users.*` codes (the coarse `users.manage` row is
+    optional), so list/create/edit must key off their own action codes."""
+    from apps.accounts.models import Role
+    role = role_with("users.view", name="uv")
+    cl = auth_client(mkuser("uv_reader", role=role))
+    assert cl.get("/api/users/").status_code == 200
+    assert cl.post("/api/users/", {"username": "uv_denied", "password": "pass12345"},
+                   format="json").status_code == 403
+
+    editor_role = role_with("users.view", "users.create", "users.edit", name="uw")
+    ecl = auth_client(mkuser("uw_editor", role=editor_role))
+    assert ecl.get("/api/users/").status_code == 200
+    coach = Role.objects.get(name="coach")
+    r = ecl.post("/api/users/", {"username": "uw_created", "password": "pass12345", "role": coach.pk},
+                 format="json")
+    assert r.status_code == 201, r.content
+    from apps.accounts.models import User
+    created = User.objects.get(username="uw_created")
+    assert ecl.patch(f"/api/users/{created.pk}/", {"first_name": "Granular"},
+                     format="json").status_code == 200
+    assert ecl.post(f"/api/users/{created.pk}/reset_password/", {}, format="json").status_code == 403
+
+
+@pytest.mark.django_db
+def test_settings_endpoint_honours_granular_codes(hari):
+    viewer_role = role_with("settings.view", name="sv")
+    vcl = auth_client(mkuser("sv_reader", role=viewer_role))
+    assert vcl.get("/api/settings/").status_code == 200
+    assert vcl.post("/api/settings/", {"key": "sv.denied", "value": "1"},
+                    format="json").status_code == 403
+
+    editor_role = role_with("settings.view", "settings.edit", name="se")
+    ecl = auth_client(mkuser("se_editor", role=editor_role))
+    assert ecl.get("/api/settings/").status_code == 200
+    r = ecl.post("/api/settings/", {"key": "se.created", "value": "1"}, format="json")
+    assert r.status_code == 201, r.content
+    assert ecl.patch(f"/api/settings/{r.data['id']}/", {"value": "2"}, format="json").status_code == 200
+
+
+@pytest.mark.django_db
+def test_role_manager_cannot_escalate_privileges():
+    """A non-super-admin holding roles.manage may shape custom roles only within
+    its own power — it can never mint a role granting codes it lacks, nor grant
+    platform-only codes (schools.manage / roles.manage)."""
+    from apps.accounts.models import Role
+    mgr_role = role_with("roles.view", "roles.manage", "reports.view", name="r8")
+    mgr = mkuser("role_mgr", role=mgr_role)
+    cl = auth_client(mgr)
+
+    # Within own power: allowed.
+    ok = cl.post("/api/users/roles/", {"name": "clone_ok", "permission_codes": ["reports.view"]},
+                 format="json")
+    assert ok.status_code == 201, ok.content
+
+    # A code the requester does not hold: refused.
+    assert cl.post("/api/users/roles/", {"name": "escalate", "permission_codes": ["payments.refund"]},
+                   format="json").status_code == 403
+    # Platform-only codes: refused even though roles.manage is held.
+    assert cl.post("/api/users/roles/", {"name": "platform", "permission_codes": ["schools.manage"]},
+                   format="json").status_code == 403
+    assert cl.post("/api/users/roles/", {"name": "propagate", "permission_codes": ["roles.manage"]},
+                   format="json").status_code == 403
+
+    # Widening an existing custom role with an ungrantable code is refused too.
+    target = Role.objects.create(name="widen_me")
+    assert cl.patch(f"/api/users/roles/{target.pk}/", {"permission_codes": ["students.create"]},
+                    format="json").status_code == 403

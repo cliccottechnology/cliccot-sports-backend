@@ -2,45 +2,106 @@ from rest_framework import serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.audit.utils import log_audit
 from apps.common.permissions import GranularPermissions, HasPerm
-from .models import Coach, CoachAssignment, CoachAvailability, CoachSport, TrainerCertificate, TrainerCheckIn
+from .models import (Coach, CoachAssignment, CoachAvailability, CoachSport,
+                     TrainerAttendanceCorrection, TrainerCertificate, TrainerCheckIn, TrainerLeave)
 
 
 class TrainerCheckInSerializer(serializers.ModelSerializer):
     session_date = serializers.DateField(source="session.date", read_only=True)
     batch_name = serializers.CharField(source="session.batch.name", read_only=True)
+    coach_name = serializers.CharField(source="coach.first_name", read_only=True)
+    trainer_id = serializers.CharField(source="coach.trainer_id", read_only=True)
+    correction_status = serializers.SerializerMethodField()
+    correction_id = serializers.SerializerMethodField()
+    deadline = serializers.SerializerMethodField()
+    can_request_correction = serializers.SerializerMethodField()
 
     class Meta:
         model = TrainerCheckIn
         fields = "__all__"
-        read_only_fields = ["coach", "marked_by", "marked_at"]
+        read_only_fields = ["coach", "marked_by", "marked_at", "auto_marked"]
+
+    def _latest_correction(self, obj):
+        return obj.corrections.order_by("-requested_at").first()
+
+    def get_correction_status(self, obj):
+        c = self._latest_correction(obj)
+        return c.status if c else None
+
+    def get_correction_id(self, obj):
+        c = self._latest_correction(obj)
+        return c.pk if c else None
+
+    def get_deadline(self, obj):
+        from .attendance_automation import attendance_deadline, config_for
+        school_id = getattr(getattr(obj.session, "batch", None), "school_id", None)
+        cfg = config_for(school_id)
+        try:
+            return attendance_deadline(obj.session, cfg.get("trainer.attendance_grace_minutes", 15)).isoformat()
+        except Exception:
+            return None
+
+    def get_can_request_correction(self, obj):
+        from .attendance_automation import config_for
+        if not obj.auto_marked and obj.status != "absent":
+            return False
+        latest = self._latest_correction(obj)
+        if latest and latest.status == "pending":
+            return False
+        school_id = getattr(getattr(obj.session, "batch", None), "school_id", None)
+        cfg = config_for(school_id)
+        days = cfg.get("trainer.correction_deadline_days", 7)
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            days = 7
+        if not obj.session_id:
+            return False
+        from datetime import timedelta
+        from django.utils import timezone
+        return timezone.localdate() <= obj.session.date + timedelta(days=days)
 
 
 class TrainerCheckInViewSet(viewsets.ModelViewSet):
     """Trainers check in to their OWN assigned sessions only.
 
-    Coaches may list their own check-ins and create one per assigned session.
-    Updates/deletes and other coaches' records require coaches.manage.
+    Coaches may list/create/update their OWN check-ins (so a mistaken mark can
+    be corrected). Deleting and other coaches' records require coaches.manage.
+    Academy admins read all of their school's check-ins for oversight.
     """
     serializer_class = TrainerCheckInSerializer
-    filterset_fields = ["coach", "session", "status"]
+    module = "coaches"
+    filterset_fields = ["coach", "session", "status", "auto_marked"]
 
     def get_permissions(self):
-        if self.action in ("list", "retrieve", "create"):
+        if self.action in ("list", "retrieve", "create", "update", "partial_update"):
             return [IsAuthenticated()]
         return [HasPerm("coaches.manage")]
 
     def get_queryset(self):
-        qs = TrainerCheckIn.objects.select_related("session__batch", "coach").all().order_by("-marked_at")
+        qs = TrainerCheckIn.objects.select_related(
+            "session__batch", "coach").all().order_by("-marked_at")
         user = self.request.user
-        if user.is_authenticated and not user.is_superuser and getattr(user, "role", None) and user.role.name == "coach":
-            if user.coach_profile_id:
-                qs = qs.filter(coach_id=user.coach_profile_id)
-            else:
+        if user.is_authenticated and not user.is_superuser:
+            role = getattr(getattr(user, "role", None), "name", None)
+            if role == "coach":
+                qs = qs.filter(coach_id=user.coach_profile_id) if user.coach_profile_id else qs.none()
+            elif not (user.has_perm_code("coaches.view") or user.has_perm_code("coaches.manage")):
                 qs = qs.none()
-        return qs
+        # Date-range window (admin oversight page) — plain query params so the
+        # filter is honoured alongside the exact-match filterset fields above.
+        date_from = self.request.query_params.get("date_from")
+        date_to = self.request.query_params.get("date_to")
+        if date_from:
+            qs = qs.filter(session__date__gte=date_from)
+        if date_to:
+            qs = qs.filter(session__date__lte=date_to)
+        from apps.common.scope import scope_queryset
+        return scope_queryset(qs, user, "session__batch__school_id")
 
     def perform_create(self, serializer):
         from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -67,6 +128,283 @@ class TrainerCheckInViewSet(viewsets.ModelViewSet):
             raise
         log_audit(self.request, "trainer.checkin", "coaches", f"session:{session.pk}",
                   new={"coach": coach_id, "status": obj.status})
+
+    def perform_update(self, serializer):
+        from rest_framework.exceptions import PermissionDenied
+        user = self.request.user
+        obj = self.get_object()
+        privileged = user.is_superuser or user.has_perm_code("coaches.manage")
+        if not privileged:
+            if not getattr(user, "coach_profile_id", None) or obj.coach_id != user.coach_profile_id:
+                raise PermissionDenied("You can only correct your own check-ins.")
+            if obj.auto_marked:
+                raise PermissionDenied(
+                    "This absence was recorded automatically. Submit an attendance correction request instead.")
+        old_status = obj.status
+        # Identity (coach/session) is immutable once recorded; only the status
+        # and notes may be corrected.
+        obj = serializer.save(coach=obj.coach, session=obj.session)
+        if old_status != obj.status:
+            log_audit(self.request, "trainer.checkin_correct", "coaches", f"session:{obj.session_id}",
+                      old={"status": old_status}, new={"status": obj.status})
+
+
+class TrainerLeaveSerializer(serializers.ModelSerializer):
+    coach_name = serializers.CharField(source="coach.first_name", read_only=True)
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = TrainerLeave
+        fields = "__all__"
+        read_only_fields = ["requested_by", "reviewed_by", "reviewed_at", "created_at"]
+
+
+class TrainerLeaveViewSet(GranularPermissions, viewsets.ModelViewSet):
+    """Trainer leave requests. A coach creates/lists their own; admins approve."""
+    queryset = TrainerLeave.objects.select_related("coach", "session").all()
+    serializer_class = TrainerLeaveSerializer
+    perm_module = "coaches"
+    list_perm = "coaches.view"
+    retrieve_perm = "coaches.view"
+    create_perm = "coaches.view"      # any signed-in coach may request
+    edit_perm = "coaches.manage"
+    destroy_perm = "coaches.manage"
+    filter_scope = ("coach__school_id",)
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "create"):
+            return [IsAuthenticated()]
+        return [HasPerm("coaches.manage")]
+
+    def get_queryset(self):
+        from apps.common.scope import scope_queryset
+        qs = scope_queryset(super().get_queryset(), self.request.user, "coach__school_id")
+        user = self.request.user
+        if user.is_authenticated and not user.is_superuser:
+            if getattr(getattr(user, "role", None), "name", None) == "coach":
+                return qs.filter(coach_id=user.coach_profile_id) if user.coach_profile_id else qs.none()
+            if not (user.has_perm_code("coaches.view") or user.has_perm_code("coaches.manage")):
+                return qs.none()
+        return qs
+
+    def perform_create(self, serializer):
+        from rest_framework.exceptions import PermissionDenied
+        user = self.request.user
+        privileged = user.is_superuser or user.has_perm_code("coaches.manage")
+        raw = serializer.validated_data.get("coach")
+        if not privileged:
+            coach_id = getattr(user, "coach_profile_id", None)
+            if not coach_id or (raw and raw.pk != coach_id):
+                raise PermissionDenied("You can only request leave for yourself.")
+        obj = serializer.save(requested_by=user)
+        log_audit(self.request, "trainer.leave_request", "coaches", f"leave:{obj.pk}",
+                  new={"coach": obj.coach_id, "date": str(obj.date)})
+
+    @action(detail=True, methods=["post"], permission_classes=[HasPerm("coaches.manage")])
+    def decide(self, request, pk=None):
+        """Approve/reject a leave request. Body: {status: approved|rejected, note?}."""
+        from django.utils import timezone
+        decision = (request.data.get("status") or "").lower()
+        if decision not in ("approved", "rejected"):
+            return Response({"detail": "status must be 'approved' or 'rejected'."}, status=400)
+        leave = self.get_object()
+        leave.status = decision
+        leave.reviewed_by = request.user
+        leave.reviewed_at = timezone.now()
+        leave.review_note = request.data.get("note", "")
+        leave.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_note"])
+        log_audit(request, "trainer.leave_decide", "coaches", f"leave:{leave.pk}",
+                  new={"status": decision})
+        return Response(self.get_serializer(leave).data)
+
+
+class TrainerAttendanceCorrectionSerializer(serializers.ModelSerializer):
+    coach_name = serializers.CharField(source="coach.first_name", read_only=True)
+    session_date = serializers.DateField(source="session.date", read_only=True)
+    batch_name = serializers.CharField(source="session.batch.name", read_only=True)
+
+    class Meta:
+        model = TrainerAttendanceCorrection
+        fields = "__all__"
+        read_only_fields = ["coach", "session", "original_status", "status",
+                            "reviewed_by", "reviewed_at", "created_at"]
+
+
+class TrainerAttendanceCorrectionViewSet(GranularPermissions, viewsets.ModelViewSet):
+    """Trainer attendance correction requests (fixing an auto-marked absence)."""
+    queryset = TrainerAttendanceCorrection.objects.select_related(
+        "coach", "session__batch").all()
+    serializer_class = TrainerAttendanceCorrectionSerializer
+    module = "coaches"
+    filterset_fields = ["coach", "status", "checkin"]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "create"):
+            return [IsAuthenticated()]
+        if self.action in ("approve", "reject"):
+            return [HasPerm("attendance.correct")]
+        return [HasPerm("coaches.manage")]
+
+    def get_queryset(self):
+        from apps.common.scope import scope_queryset
+        qs = scope_queryset(super().get_queryset(), self.request.user, "coach__school_id")
+        user = self.request.user
+        if user.is_authenticated and not user.is_superuser:
+            if getattr(getattr(user, "role", None), "name", None) == "coach":
+                return qs.filter(coach_id=user.coach_profile_id) if user.coach_profile_id else qs.none()
+            if not (user.has_perm_code("coaches.view") or user.has_perm_code("coaches.manage")
+                    or user.has_perm_code("attendance.correct")):
+                return qs.none()
+        return qs
+
+    def _approval_allowed(self, user, school_id):
+        if user.is_superuser:
+            return True
+        if user.has_perm_code("attendance.correct"):
+            return True
+        from .attendance_automation import config_for
+        roles = config_for(school_id).get("trainer.approval_roles") or []
+        return getattr(getattr(user, "role", None), "name", None) in roles
+
+    def perform_create(self, serializer):
+        from datetime import timedelta
+        from django.utils import timezone
+        from rest_framework.exceptions import PermissionDenied, ValidationError
+        user = self.request.user
+        checkin = serializer.validated_data.get("checkin")
+        if checkin is None:
+            raise ValidationError({"checkin": "A check-in is required."})
+        privileged = user.is_superuser or user.has_perm_code("coaches.manage")
+        if not privileged:
+            if not getattr(user, "coach_profile_id", None) or checkin.coach_id != user.coach_profile_id:
+                raise PermissionDenied("You can only request a correction for your own attendance.")
+        if not (checkin.auto_marked or checkin.status == "absent"):
+            raise ValidationError("This check-in is not an automatically marked absence.")
+        if checkin.corrections.filter(status="pending").exists():
+            raise ValidationError("A correction request for this session is already pending.")
+        school_id = getattr(getattr(checkin.session, "batch", None), "school_id", None)
+        from .attendance_automation import config_for
+        days = config_for(school_id).get("trainer.correction_deadline_days", 7)
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            days = 7
+        if timezone.localdate() > checkin.session.date + timedelta(days=days):
+            raise ValidationError("The correction request window for this session has closed.")
+        obj = serializer.save(coach=checkin.coach, session=checkin.session,
+                              original_status=checkin.status)
+        log_audit(self.request, "trainer.correction_request", "coaches", f"correction:{obj.pk}",
+                  new={"checkin": checkin.pk, "requested_status": obj.requested_status})
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        correction = self.get_object()
+        school_id = getattr(correction.coach, "school_id", None)
+        if not self._approval_allowed(request.user, school_id):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You are not permitted to approve attendance corrections.")
+        if correction.status != "pending":
+            return Response({"detail": "This request has already been decided."}, status=400)
+        from django.utils import timezone
+        checkin = correction.checkin
+        old_status = checkin.status
+        if request.data.get("requested_status"):
+            override = request.data["requested_status"]
+            if override not in ("present", "late", "leave"):
+                return Response({"detail": "requested_status must be present, late or leave."}, status=400)
+            correction.requested_status = override
+        checkin.status = correction.requested_status
+        checkin.auto_marked = False
+        checkin.notes = (checkin.notes + " | " if checkin.notes else "") + "Corrected via approved request"
+        checkin.save(update_fields=["status", "auto_marked", "notes"])
+        correction.status = "approved"
+        correction.reviewed_by = request.user
+        correction.reviewed_at = timezone.now()
+        correction.review_note = request.data.get("note", "")
+        correction.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_note",
+                                       "requested_status"])
+        log_audit(request, "trainer.correction_approve", "coaches", f"correction:{correction.pk}",
+                  old={"status": old_status}, new={"status": checkin.status})
+        return Response(self.get_serializer(correction).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        correction = self.get_object()
+        school_id = getattr(correction.coach, "school_id", None)
+        if not self._approval_allowed(request.user, school_id):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("You are not permitted to reject attendance corrections.")
+        if correction.status != "pending":
+            return Response({"detail": "This request has already been decided."}, status=400)
+        note = (request.data.get("note") or "").strip()
+        if not note:
+            return Response({"detail": "A reason is required to reject a correction request."}, status=400)
+        from django.utils import timezone
+        correction.status = "rejected"
+        correction.reviewed_by = request.user
+        correction.reviewed_at = timezone.now()
+        correction.review_note = note
+        correction.save(update_fields=["status", "reviewed_by", "reviewed_at", "review_note"])
+        log_audit(request, "trainer.correction_reject", "coaches", f"correction:{correction.pk}",
+                  new={"reason": note})
+        return Response(self.get_serializer(correction).data)
+
+
+class TrainerAttendanceConfigView(APIView):
+    """Super Admin configuration for automatic trainer-absence handling.
+
+    Reads/writes the AcademySetting keys (platform-level by default, or one
+    academy via ?school=). Gated by settings.view / settings.edit and audited.
+    """
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [HasPerm("settings.view")]
+        return [HasPerm("settings.edit")]
+
+    def _school(self, request):
+        from apps.common.scope import user_school_id
+        sid = user_school_id(request.user)
+        if sid is not None:
+            return sid
+        raw = request.query_params.get("school") or request.data.get("school")
+        try:
+            return int(raw) if raw not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    def get(self, request):
+        from apps.academy.models import get_setting
+        from .attendance_automation import CONFIG_META, DEFAULT_SETTINGS
+        school_id = self._school(request)
+        rows = []
+        for key, label, kind, description in CONFIG_META:
+            default = DEFAULT_SETTINGS[key]
+            value = get_setting(key, school_id, default)
+            rows.append({"key": key, "label": label, "type": kind, "description": description,
+                         "value": default if value is None else value, "default": default})
+        return Response({"school": school_id, "settings": rows})
+
+    def put(self, request):
+        from apps.academy.models import AcademySetting
+        from .attendance_automation import DEFAULT_SETTINGS
+        school_id = self._school(request)
+        payload = request.data.get("settings") or request.data
+        if not isinstance(payload, dict):
+            return Response({"detail": "Provide a settings mapping."}, status=400)
+        changed = {}
+        for key, value in payload.items():
+            if key not in DEFAULT_SETTINGS or key == "school":
+                continue
+            changed[key] = value
+            AcademySetting.objects.update_or_create(
+                key=key, school_id=school_id,
+                defaults={"value": value, "description": "Trainer attendance automation"})
+        if changed:
+            log_audit(request, "trainer.attendance_config", "settings", f"school:{school_id or 'platform'}",
+                      new=changed)
+        return self.get(request)
+
 
 WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -154,6 +492,9 @@ class CoachViewSet(GranularPermissions, viewsets.ModelViewSet):
                   new={"trainer_id": coach.trainer_id})
 
     def perform_update(self, serializer):
+        from apps.common.scope import ensure_school
+        if "school" in serializer.validated_data:
+            ensure_school(self.request, serializer.validated_data.get("school"))
         old = {f: getattr(serializer.instance, f) for f in ("first_name", "last_name", "phone", "email")}
         coach = serializer.save()
         changed = {f: getattr(coach, f) for f in old if getattr(coach, f) != old[f]}
@@ -306,13 +647,25 @@ class TrainerCertificateViewSet(GranularPermissions, viewsets.ModelViewSet):
     permission_classes = [HasPerm("coaches.manage")]
     filterset_fields = ["trainer"]
 
+    def get_permissions(self):
+        # A trainer reads back their OWN certificates (self-scoped in
+        # get_queryset below); issuing/editing/deleting stays admin-only.
+        if self.action in ("list", "retrieve"):
+            return [IsAuthenticated()]
+        return super().get_permissions()
+
     def get_queryset(self):
-        qs = super().get_queryset()
+        from apps.common.scope import scope_queryset
+        qs = scope_queryset(super().get_queryset(), self.request.user, "trainer__school_id")
         user = self.request.user
-        if user.is_authenticated and not user.is_superuser and getattr(user, "role", None) and user.role.name == "coach":
-            if user.coach_profile_id:
-                return qs.filter(trainer_id=user.coach_profile_id)
-            return qs.none()
+        if user.is_authenticated and not user.is_superuser:
+            if getattr(getattr(user, "role", None), "name", None) == "coach":
+                if user.coach_profile_id:
+                    return qs.filter(trainer_id=user.coach_profile_id)
+                return qs.none()
+            # Any other (non-admin) account still needs an explicit grant.
+            if not (user.has_perm_code("coaches.view") or user.has_perm_code("coaches.manage")):
+                return qs.none()
         return qs
 
     def perform_create(self, serializer):
@@ -333,9 +686,9 @@ class TrainerCertificateViewSet(GranularPermissions, viewsets.ModelViewSet):
         trainer_id = request.data.get("trainer")
         if not trainer_id:
             return Response({"detail": "trainer is required."}, status=400)
-        try:
-            coach = Coach.objects.get(pk=trainer_id)
-        except Coach.DoesNotExist:
+        from apps.common.scope import scope_queryset
+        coach = scope_queryset(Coach.objects.all(), request.user, "school_id").filter(pk=trainer_id).first()
+        if not coach:
             return Response({"detail": "Trainer not found."}, status=404)
         to_date = d.fromisoformat(request.data["period_to"]) if request.data.get("period_to") else d.today()
         frm = request.data.get("period_from")
@@ -385,4 +738,4 @@ class CoachAssignmentViewSet(GranularPermissions, viewsets.ModelViewSet):
     serializer_class = CoachAssignmentSerializer
     perm_module = "coaches"
     permission_classes = [HasPerm("coaches.manage")]
-    filterset_fields = ["coach", "batch", "is_primary"]
+    filterset_fields = ["coach", "batch"]

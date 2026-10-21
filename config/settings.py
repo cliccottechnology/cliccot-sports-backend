@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     "apps.documents",
     "apps.support",
     "apps.customization",
+    "faceauth.apps.FaceauthConfig",
 ]
 
 MIDDLEWARE = [
@@ -108,7 +109,10 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": ("apps.accounts.auth.ActiveJWTAuthentication",),
-    "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
+    "DEFAULT_PERMISSION_CLASSES": (
+        "rest_framework.permissions.IsAuthenticated",
+        "apps.common.modules.ModuleEnabled",
+    ),
     "DEFAULT_PAGINATION_CLASS": "apps.common.pagination.StandardPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_FILTER_BACKENDS": (
@@ -122,12 +126,26 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {"TITLE": "JETZ Sports Academy API", "VERSION": "1.0.0"}
 
+# Session lifetimes.
+#   ACCESS  — short-lived bearer token the apps silently refresh.
+#   SESSION — absolute cap on one login; after it the user must sign in again.
+#             Enforced by the `session_exp` claim (apps/accounts/auth.py) on the
+#             access AND refresh paths, so rotation cannot extend past it.
+#   REFRESH — must be >= SESSION, otherwise the refresh token itself dies first
+#             and the session ends early. Defaults to SESSION. The legacy
+#             `JWT_REFRESH_DAYS` key is still accepted.
+JWT_ACCESS_MINUTES = int(os.environ.get("JWT_ACCESS_MINUTES", "15"))
+JWT_SESSION_MINUTES = int(os.environ.get("JWT_SESSION_MINUTES", "720"))  # 12 hours
+if os.environ.get("JWT_REFRESH_MINUTES"):
+    JWT_REFRESH_MINUTES = int(os.environ["JWT_REFRESH_MINUTES"])
+elif os.environ.get("JWT_REFRESH_DAYS"):
+    JWT_REFRESH_MINUTES = int(os.environ["JWT_REFRESH_DAYS"]) * 24 * 60
+else:
+    JWT_REFRESH_MINUTES = JWT_SESSION_MINUTES
+
 SIMPLE_JWT = {
-    # Short access tokens; the absolute 60-minute session cap is enforced via
-    # the session_exp claim (apps/accounts/auth.py) on both refresh and access.
-    # JWT_REFRESH_MINUTES is absolute from login — rotation cannot extend it.
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=int(os.environ.get("JWT_ACCESS_MINUTES", "15"))),
-    "REFRESH_TOKEN_LIFETIME": timedelta(minutes=int(os.environ.get("JWT_REFRESH_MINUTES", "60"))),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=JWT_ACCESS_MINUTES),
+    "REFRESH_TOKEN_LIFETIME": timedelta(minutes=JWT_REFRESH_MINUTES),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
 }
@@ -155,8 +173,25 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 
 # Photo-attendance vision provider (pilot = evidence + coach-confirmed review;
-# swap for a real CV provider without changing the API contract).
+# faceauth = AWS Rekognition matching against consented student reference
+# photos; swap without changing the API contract).
 ATTENDANCE_VISION_PROVIDER = os.environ.get("ATTENDANCE_VISION_PROVIDER", "pilot")
+
+# Face-group (student) matching thresholds used by faceauth's decision engine.
+# A face is auto-suggested "present" only at/above FACE_GROUP_MATCH_THRESHOLD;
+# between REVIEW and MATCH the coach must confirm; below REVIEW it is ignored.
+FACE_GROUP_MATCH_THRESHOLD = float(os.environ.get("FACE_GROUP_MATCH_THRESHOLD", "90"))
+FACE_GROUP_REVIEW_THRESHOLD = float(os.environ.get("FACE_GROUP_REVIEW_THRESHOLD", "80"))
+FACE_GROUP_AMBIGUITY_MARGIN = float(os.environ.get("FACE_GROUP_AMBIGUITY_MARGIN", "3"))
+
+# Face matching engine (AWS Rekognition). boto3 reads the AWS credentials from
+# the environment directly; these settings drive collection naming/thresholds.
+FACE_VERIFICATION_PROVIDER = os.environ.get("FACE_VERIFICATION_PROVIDER", "none")
+AWS_REGION = os.environ.get("AWS_REGION", "")
+AWS_LIVENESS_REGION = os.environ.get("AWS_LIVENESS_REGION", "") or AWS_REGION
+AWS_REKOGNITION_COLLECTION_PREFIX = os.environ.get("AWS_REKOGNITION_COLLECTION_PREFIX", "")
+FACE_MATCH_THRESHOLD = float(os.environ.get("FACE_MATCH_THRESHOLD", "90"))
+FACE_LIVENESS_MIN_CONFIDENCE = float(os.environ.get("FACE_LIVENESS_MIN_CONFIDENCE", "90"))
 
 # File upload validation
 MAX_UPLOAD_SIZE_MB = 10
@@ -167,6 +202,14 @@ PAYMENT_GATEWAY_PROVIDER = os.environ.get("PAYMENT_GATEWAY_PROVIDER", "mock")
 WHATSAPP_PROVIDER = os.environ.get("WHATSAPP_PROVIDER", "mock")
 
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
+# Scheduled jobs (run only when a Celery beat + worker are deployed). The same
+# sweep is available via `manage.py process_trainer_attendance` for cron.
+CELERY_BEAT_SCHEDULE = {
+    "process-trainer-attendance": {
+        "task": "apps.coaches.tasks.process_trainer_attendance",
+        "schedule": 300.0,  # every 5 minutes
+    },
+}
 
 LOGGING = {
     "version": 1,
@@ -174,3 +217,41 @@ LOGGING = {
     "handlers": {"console": {"class": "logging.StreamHandler"}},
     "root": {"handlers": ["console"], "level": "INFO"},
 }
+
+
+# =====================================================
+# Face verification (faceauth app).
+# FACE_VERIFICATION_PROVIDER: "none" (default, fail-closed)
+# or "aws" (Rekognition + configured mobile liveness SDK).
+# Never treated as verified unless a real provider confirms.
+# =====================================================
+ 
+FACE_VERIFICATION_PROVIDER = os.getenv("FACE_VERIFICATION_PROVIDER", "none")
+FACE_MATCH_THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "90"))
+FACE_REKOGNITION_COLLECTION_ID = os.getenv(
+    "FACE_REKOGNITION_COLLECTION_ID", "cliccot-faces"
+)
+AWS_REKOGNITION_COLLECTION_PREFIX = os.getenv(
+    "AWS_REKOGNITION_COLLECTION_PREFIX", ""
+)
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+ 
+# --- Live-only face check (AWS Rekognition Face Liveness) ---------
+# When True (default) the old still-photo endpoints (/api/face/verify/,
+# /verify-session/, multipart /enroll/) return 410 and attendance can only be
+# verified through /api/face/liveness/start/ + /complete/.
+FACE_REQUIRE_LIVENESS = os.getenv("FACE_REQUIRE_LIVENESS", "True").lower() in ("1", "true", "yes")
+# Region where Face Liveness is available (defaults to AWS_REGION).
+AWS_LIVENESS_REGION = os.getenv("AWS_LIVENESS_REGION", "") or AWS_REGION
+# AWS liveness confidence (0-100) required to pass.
+FACE_LIVENESS_MIN_CONFIDENCE = float(os.getenv("FACE_LIVENESS_MIN_CONFIDENCE", "90"))
+# IAM role the backend assumes to give the phone 15-min credentials that can
+# ONLY call rekognition:StartFaceLivenessSession. Leave empty to use Cognito.
+AWS_LIVENESS_ROLE_ARN = os.getenv("AWS_LIVENESS_ROLE_ARN", "")
+# Only needed if the reference image is not returned inline.
+AWS_LIVENESS_S3_BUCKET = os.getenv("AWS_LIVENESS_S3_BUCKET", "")
+FACE_LIVENESS_AUDIT_IMAGES = int(os.getenv("FACE_LIVENESS_AUDIT_IMAGES", "0"))
+FACE_MIN_TEMPLATES = int(os.getenv("FACE_MIN_TEMPLATES", "1"))
+FACE_MAX_STARTS_PER_10_MIN = int(os.getenv("FACE_MAX_STARTS_PER_10_MIN", "6"))
+ 
+ 

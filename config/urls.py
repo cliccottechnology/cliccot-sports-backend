@@ -6,7 +6,12 @@ from django.urls import include, path
 
 
 def health(_request):
-    return JsonResponse({"status": "ok", "service": "jetz-backend"})
+    return JsonResponse({
+        "status": "ok",
+        "service": "jetz-backend",
+        "vision_provider": getattr(settings, "ATTENDANCE_VISION_PROVIDER", "pilot"),
+        "face_engine": getattr(settings, "FACE_VERIFICATION_PROVIDER", "none"),
+    })
 
 
 urlpatterns = [
@@ -16,6 +21,7 @@ urlpatterns = [
     path("api/users/", include("apps.accounts.user_urls")),
     path("api/sports/", include("apps.academy.urls")),
     path("api/schools/", include("apps.academy.schools_urls")),
+    path("api/modules/", include("apps.academy.modules_urls")),
     path("api/students/", include("apps.students.urls")),
     path("api/parents/", include("apps.parents.urls")),
     path("api/coaches/", include("apps.coaches.urls")),

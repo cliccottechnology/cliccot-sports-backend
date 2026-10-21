@@ -8,7 +8,14 @@ from typing import Dict, List, Tuple
 
 # module -> [(action, human label)]
 MODULE_ACTIONS: Dict[str, List[Tuple[str, str]]] = {
-    "schools": [("view", "View schools"), ("manage", "Onboard and manage schools")],    "sports": [("view", "View sports"), ("create", "Create sports"), ("edit", "Edit sports"),
+    # `schools.manage` = platform-level academy onboarding. The granular
+    # create/edit/archive codes cover a tenant academy's OWN branches and
+    # locations, which a branch administrator must be able to run without
+    # being able to onboard or alter another academy.
+    "schools": [("view", "View schools and branches"), ("create", "Create branches"),
+                ("edit", "Edit branches"), ("archive", "Archive branches"),
+                ("manage", "Onboard and manage schools")],
+    "sports": [("view", "View sports"), ("create", "Create sports"), ("edit", "Edit sports"),
                ("archive", "Archive sports"), ("export", "Export sports")],
     "students": [("view", "View students"), ("create", "Create students"), ("edit", "Edit students"),
                  ("archive", "Archive students"), ("export", "Export student records")],

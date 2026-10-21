@@ -19,11 +19,26 @@ class Session(models.Model):
     location = models.ForeignKey("academy.TrainingLocation", null=True, blank=True, on_delete=models.SET_NULL)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="scheduled", db_index=True)
     notes = models.TextField(blank=True)
+    # A make-up session replaces a session a student could not attend on the
+    # scheduled day (e.g. a weekday session made up at the weekend). The
+    # original absence stays recorded on its own session; `makeup_for` links
+    # the make-up back to it so the two are traceable and never double-counted.
+    is_makeup = models.BooleanField(default=False, db_index=True)
+    makeup_for = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name="makeup_sessions")
+    # Make-up sessions never credit trainer salary automatically — an
+    # authorized admin must explicitly validate them before a payable is raised.
     validated_for_trainer_fee = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        indexes = [models.Index(fields=["date", "status"]), models.Index(fields=["coach", "date"])]
+        indexes = [
+            models.Index(fields=["date", "status"]),
+            models.Index(fields=["coach", "date"]),
+            # Speeds up authoritative conflict checks: filter by coach + date +
+            # live status, then compare start/end times.
+            models.Index(fields=["coach", "date", "status"], name="sess_coach_date_status_idx"),
+        ]
         ordering = ["-date", "start_time"]
 
     def __str__(self):

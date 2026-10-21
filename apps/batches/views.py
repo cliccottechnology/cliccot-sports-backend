@@ -67,6 +67,7 @@ class BatchViewSet(GranularPermissions, viewsets.ModelViewSet):
 class BatchStudentViewSet(viewsets.ModelViewSet):
     queryset = BatchStudent.objects.select_related("batch", "student").all()
     serializer_class = BatchStudentSerializer
+    module = "batches"
     permission_classes = [HasPerm("batches.manage")]
     filterset_fields = ["batch", "student", "is_active"]
 

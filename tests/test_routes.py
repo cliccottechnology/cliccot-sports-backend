@@ -57,11 +57,32 @@ def test_brand_is_public_and_live(anon):
     from apps.academy.models import AcademySetting
     r = anon.get("/api/settings/brand/")
     assert r.status_code == 200, r.content
-    assert r.data["name"] == "JETZ Sports Academy"
+    assert r.data["name"] == ""
     AcademySetting.objects.update_or_create(key="academy.name", defaults={"value": "Victory Sports Hub"})
     r = anon.get("/api/settings/brand/")
     assert r.status_code == 200, r.content
     assert r.data["name"] == "Victory Sports Hub"
+
+
+@pytest.mark.django_db
+def test_brand_fallbacks_are_not_hardcoded(anon):
+    """Unconfigured installs must not advertise a built-in academy identity."""
+    r = anon.get("/api/settings/brand/")
+    assert r.status_code == 200, r.content
+    assert "JETZ" not in (r.data["name"] or "")
+    assert r.data["tagline"] == ""
+
+
+@pytest.mark.django_db
+def test_brand_ignores_stale_token(anon):
+    """A stale/expired token must not break the public brand lookup.
+
+    The frontend attaches its current Bearer token to every request. DRF
+    authenticates (and can 401) before permission checks, so without skipping
+    auth on this public action a stale token would reject it."""
+    r = anon.get("/api/settings/brand/", HTTP_AUTHORIZATION="Bearer not-a-real-token")
+    assert r.status_code == 200, r.content
+    assert "name" in r.data
 
 
 @pytest.mark.django_db

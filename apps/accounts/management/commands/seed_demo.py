@@ -81,7 +81,8 @@ class Command(BaseCommand):
 
         football, _ = Sport.objects.get_or_create(name="Football", defaults={"code": "FB"})
         cricket, _ = Sport.objects.get_or_create(name="Cricket", defaults={"code": "CR"})
-        skating, _ = Sport.objects.get_or_create(name="Skating", defaults={"code": "SK"})        loc, _ = TrainingLocation.objects.get_or_create(name="Main Ground")
+        skating, _ = Sport.objects.get_or_create(name="Skating", defaults={"code": "SK"})
+        loc, _ = TrainingLocation.objects.get_or_create(name="Main Ground")
         stype, _ = SessionType.objects.get_or_create(name="Regular")
 
         def user(username, role, pwd="Jetz@123"):
@@ -135,6 +136,39 @@ class Command(BaseCommand):
                                       defaults={"session_type": stype, "location": loc})
         StudentFee.objects.get_or_create(student=student, fee_plan=plan, period_label="2026-10",
                                          defaults={"amount": plan.amount, "due_date": date.today(), "batch": batch})
+
+        # Fee cycles beyond monthly, so the client can see quarterly / half-yearly plans.
+        FeePlan.objects.get_or_create(name="Standard Quarterly", cycle="quarterly",
+                                      defaults={"amount": 5400, "sport": football})
+        FeePlan.objects.get_or_create(name="Standard Half-Yearly", cycle="half_yearly",
+                                      defaults={"amount": 10000, "sport": football})
+
+        # Trainer salary: per-session rate so completed sessions become payable.
+        from apps.trainer_fees.models import TrainerFeeRule
+        TrainerFeeRule.objects.get_or_create(
+            trainer=coach, rate_per_session=500, effective_from=date.today() - timedelta(days=90),
+            defaults={"is_active": True})
+
+        # Make-up demo: a missed weekday session (absent) plus a linked make-up session.
+        from apps.attendance.models import AttendanceRecord
+        from apps.sessions.models import SessionStudent
+        missed_date = date.today() - timedelta(days=7)
+        if missed_date.weekday() in (coach.weekly_off_days or []):
+            missed_date -= timedelta(days=1)
+        missed, _ = Session.objects.get_or_create(
+            batch=batch, sport=football, coach=coach, date=missed_date,
+            start_time=batch.start_time, end_time=batch.end_time,
+            defaults={"session_type": stype, "location": loc, "status": "completed"})
+        SessionStudent.objects.get_or_create(session=missed, student=student)
+        AttendanceRecord.objects.get_or_create(session=missed, student=student, defaults={"status": "absent"})
+        makeup_start = time(9, 0)
+        makeup, _ = Session.objects.get_or_create(
+            batch=batch, sport=football, coach=coach, date=tomorrow,
+            start_time=makeup_start, end_time=time(10, 0),
+            defaults={"session_type": stype, "location": loc, "is_makeup": True,
+                      "makeup_for": missed, "status": "completed"})
+        SessionStudent.objects.get_or_create(session=makeup, student=student)
+
         WhatsAppTemplate.objects.get_or_create(name="fee_reminder", defaults={
             "category": "fee_reminder", "body": "Dear parent, fee of {{amount}} for {{student}} is due on {{due_date}}."})
         WhatsAppTemplate.objects.get_or_create(name="payment_confirmation", defaults={

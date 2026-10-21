@@ -113,6 +113,36 @@ ROLE_RANK = {"parent": 1, "coach": 2, "academy_admin": 3, "super_admin": 4}
 ADMIN_LEVEL_CODES = {"users.manage", "users.create", "users.edit", "roles.manage",
                      "settings.manage", "settings.edit"}
 
+# Platform-level powers a tenant role manager must never hand out or take. Only
+# a super admin may grant these; otherwise a custom-role manager could mint a
+# peer role that onboards academies or rewrites the whole permission system.
+PLATFORM_ONLY_CODES = {"schools.manage", "roles.manage"}
+
+
+def held_codes(user) -> set:
+    if not getattr(user, "role", None):
+        return set()
+    try:
+        return set(user.role.permissions.values_list("code", flat=True))
+    except Exception:
+        return set()
+
+
+def assert_may_grant_codes(requester, codes):
+    """No privilege escalation: a non-super-admin may only grant permission
+    codes their own role already implies (directly or via `<module>.manage` /
+    legacy mapping), and never platform-only codes."""
+    if is_super_admin(requester):
+        return
+    from rest_framework.exceptions import PermissionDenied
+    from apps.common.permissions import _implies
+    held = held_codes(requester)
+    for code in codes:
+        if code in PLATFORM_ONLY_CODES:
+            raise PermissionDenied(f"Only a super admin can grant '{code}'.")
+        if not any(_implies(h, code) for h in held):
+            raise PermissionDenied(f"You cannot grant '{code}' — it exceeds your own permissions.")
+
 
 def role_rank(role) -> int:
     """Rank follows power, not just the name, so per-admin custom roles slot
@@ -174,11 +204,15 @@ def assert_may_manage(requester, target_user=None, target_role=None, target_scho
 
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.select_related("role", "school").all().order_by("-date_joined")
-    required_permission = "users.manage"
+    module = "users"
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):
             return [HasPerm("users.view")]
+        if self.action == "create":
+            return [HasPerm("users.create")]
+        if self.action in ("update", "partial_update"):
+            return [HasPerm("users.edit")]
         if self.action == "reset_password":
             return [HasPerm("users.reset_password")]
         return [HasPerm("users.manage")]
@@ -196,10 +230,22 @@ class UserViewSet(viewsets.ModelViewSet):
         from apps.common.scope import scope_queryset
         return scope_queryset(super().get_queryset(), self.request.user, "school_id")
 
+    def filter_queryset(self, queryset):
+        qs = super().filter_queryset(queryset)
+        # The account list is an academy-management view: super admins (e.g.
+        # the platform owner) are a platform concern and must never appear here.
+        # Applies to the list only, so any direct retrieve/update still hits the
+        # 403 guard in perform_* rather than a misleading 404.
+        if self.action == "list":
+            qs = qs.exclude(is_superuser=True).exclude(role__name="super_admin")
+        return qs
+
     def perform_create(self, serializer):
+        from apps.common.scope import ensure_school
         assert_may_manage(self.request.user, target_role=serializer.validated_data.get("role"),
                           target_school=serializer.validated_data.get("school"))
-        user = serializer.save()
+        given = serializer.validated_data.pop("school", None)
+        user = serializer.save(school_id=ensure_school(self.request, given))
         # Admin-created accounts must change the (communicated) password at first login.
         user.must_change_password = True
         user.save(update_fields=["must_change_password"])
@@ -271,6 +317,7 @@ class UserViewSet(viewsets.ModelViewSet):
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = Role.objects.prefetch_related("permissions").all()
     serializer_class = RoleSerializer
+    module = "roles"
     permission_classes = [HasPerm("users.manage")]
 
     def get_permissions(self):
@@ -294,6 +341,7 @@ class RoleViewSet(viewsets.ModelViewSet):
                 raise PermissionDenied("Only a super admin can change system roles.")
 
     def perform_create(self, serializer):
+        assert_may_grant_codes(self.request.user, serializer.validated_data.get("permission_codes") or [])
         role = serializer.save()
         log_audit(self.request, "role.create", "roles", f"role:{role.pk}",
                   new={"name": role.name, "permissions": self._codes(role)})
@@ -302,6 +350,9 @@ class RoleViewSet(viewsets.ModelViewSet):
         obj = self.get_object()
         self._guard_system_role(obj)
         old_codes = self._codes(obj)
+        codes = serializer.validated_data.get("permission_codes")
+        if codes is not None:
+            assert_may_grant_codes(self.request.user, codes)
         if "name" in serializer.validated_data and serializer.validated_data["name"] != obj.name:
             if obj.name in ("super_admin", "academy_admin", "coach", "parent"):
                 from rest_framework.exceptions import ValidationError

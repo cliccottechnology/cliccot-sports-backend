@@ -29,7 +29,8 @@ class NotificationViewSet(GranularPermissions, viewsets.ModelViewSet):
     create_perm = "notifications.send"
     edit_perm = "notifications.send"
     destroy_perm = "notifications.send"
-    extra_action_perms = {"read": "notifications.view", "mark_all_read": "notifications.view"}
+    extra_action_perms = {"read": "notifications.view", "mark_all_read": "notifications.view",
+                          "broadcast": "notifications.send", "push_status": "notifications.view"}
     permission_classes = [IsAuthenticated]
     filterset_fields = ["is_read"]
 
@@ -41,9 +42,10 @@ class NotificationViewSet(GranularPermissions, viewsets.ModelViewSet):
         return super().get_permissions()
 
     def get_queryset(self):
+        from apps.common.scope import scope_queryset
         user = self.request.user
         if user.is_superuser or (getattr(user, "role", None) and user.role.name in ("super_admin", "academy_admin")):
-            qs = Notification.objects.all()
+            qs = scope_queryset(Notification.objects.all(), user, "user__school_id")
             uid = self.request.query_params.get("user")
             if uid:
                 qs = qs.filter(user_id=uid)
@@ -78,6 +80,7 @@ class NotificationViewSet(GranularPermissions, viewsets.ModelViewSet):
         from apps.students.models import Student
         from apps.whatsapp.models import WhatsAppMessage
         from apps.whatsapp.views import _deliver
+        from apps.common.scope import scope_queryset
         from .push import get_push_provider
         title = (request.data.get("title") or "").strip()
         message = (request.data.get("message") or "").strip()
@@ -99,7 +102,7 @@ class NotificationViewSet(GranularPermissions, viewsets.ModelViewSet):
         roles = request.data.get("roles") or []
         if isinstance(roles, str):
             roles = [roles]
-        users = User.objects.filter(is_active=True)
+        users = scope_queryset(User.objects.filter(is_active=True), request.user, "school_id")
         if roles:
             users = users.filter(role__name__in=roles)
         users = list(users[:500])
@@ -140,7 +143,7 @@ class NotificationViewSet(GranularPermissions, viewsets.ModelViewSet):
             session_id = request.data.get("session")
             batch_id = request.data.get("batch")
             sport_id = request.data.get("sport")
-            students = Student.objects.all()
+            students = scope_queryset(Student.objects.all(), request.user, "school_id")
             if student_ids:
                 students = students.filter(pk__in=[int(x) for x in student_ids if str(x).isdigit()])
             elif session_id:
@@ -211,4 +214,5 @@ class NotificationViewSet(GranularPermissions, viewsets.ModelViewSet):
 class NotificationTemplateViewSet(viewsets.ModelViewSet):
     queryset = NotificationTemplate.objects.all()
     serializer_class = NotificationTemplateSerializer
+    module = "notifications"
     permission_classes = [HasPerm("settings.manage")]

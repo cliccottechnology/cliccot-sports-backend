@@ -5,14 +5,16 @@ full API access until their token expires. That breaks the admin promise that
 disabling an account takes effect everywhere, immediately. This subclass
 re-checks ``is_active`` on every request.
 
-It also enforces the absolute 60-minute session cap: every access token
-issued by a session login carries ``session_exp`` (unix timestamp); any
-request past that instant is rejected with 401 even if the token itself has
-not yet expired. Refresh tokens carry the same claim and the refresh endpoint
-refuses to extend past it. No sliding, no silent extension.
+It also enforces an absolute session cap (``settings.JWT_SESSION_MINUTES``,
+default 12 hours): every access token issued by a session login carries
+``session_exp`` (unix timestamp); any request past that instant is rejected
+with 401 even if the token itself has not yet expired. Refresh tokens carry
+the same claim and the refresh endpoint refuses to extend past it. No sliding,
+no silent extension within a session.
 """
 from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.utils import timezone
@@ -22,7 +24,7 @@ from rest_framework_simplejwt.exceptions import AuthenticationFailed, InvalidTok
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 
-SESSION_MINUTES = 60
+SESSION_MINUTES_DEFAULT = 720
 
 # Identity claims carried on every session token so each app/portal has a
 # self-describing, server-verified identity. Refreshed access tokens keep them
@@ -32,7 +34,8 @@ IDENTITY_CLAIMS = ("role", "portal", "parent_id")
 
 def session_expiry_timestamp(from_time=None):
     base = from_time or timezone.now()
-    return int((base + timedelta(minutes=SESSION_MINUTES)).timestamp())
+    minutes = int(getattr(settings, "JWT_SESSION_MINUTES", SESSION_MINUTES_DEFAULT))
+    return int((base + timedelta(minutes=minutes)).timestamp())
 
 
 class SessionRefreshToken(RefreshToken):

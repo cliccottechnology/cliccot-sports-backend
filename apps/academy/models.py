@@ -39,10 +39,39 @@ class SportCategory(models.Model):
         unique_together = ("sport", "name")
 
 
+class Branch(models.Model):
+    """A physical site/branch inside an academy. Operational rows may point at
+    a branch; a user scoped to a school sees all of that school's branches."""
+    school = models.ForeignKey(School, on_delete=models.CASCADE, related_name="branches")
+    name = models.CharField(max_length=150)
+    code = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("school", "name")
+        ordering = ["name"]
+
+    def __str__(self):
+        return f"{self.school.name} · {self.name}"
+
+
 class TrainingLocation(models.Model):
-    name = models.CharField(max_length=150, unique=True)
+    """Training venues are academy-owned, so the same venue name may exist in
+    different academies — uniqueness is per school, not global."""
+    name = models.CharField(max_length=150)
+    school = models.ForeignKey(School, null=True, blank=True, on_delete=models.CASCADE,
+                               related_name="locations")
+    branch = models.ForeignKey(Branch, null=True, blank=True, on_delete=models.SET_NULL,
+                               related_name="locations")
     address = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = ("school", "name")
+        ordering = ["name"]
 
 
 class SessionType(models.Model):
@@ -52,13 +81,58 @@ class SessionType(models.Model):
 
 
 class AcademySetting(models.Model):
-    key = models.CharField(max_length=100, unique=True)
+    """Key/value configuration. `school=NULL` rows are platform-wide defaults
+    (the historical single-academy data); a school-specific row of the same key
+    overrides the default for that academy only."""
+    key = models.CharField(max_length=100)
+    school = models.ForeignKey(School, null=True, blank=True, on_delete=models.CASCADE,
+                               related_name="settings")
     value = models.JSONField(default=dict, blank=True)
     description = models.TextField(blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        ordering = ["key"]
+        constraints = [
+            models.UniqueConstraint(fields=["school", "key"], name="academysetting_per_school"),
+            models.UniqueConstraint(fields=["key"], name="academysetting_global_key",
+                                    condition=models.Q(school__isnull=True)),
+        ]
+
     def __str__(self):
-        return self.key
+        return self.key if self.school_id is None else f"{self.school.name} · {self.key}"
+
+    @property
+    def scope(self):
+        return self.school.name if self.school_id else "Platform"
+
+
+class AcademyModule(models.Model):
+    """Per-academy module enablement. A missing row means "enabled" so existing
+    academies keep every feature until the Super Admin switches one off."""
+    school = models.ForeignKey(School, on_delete=models.CASCADE, related_name="module_flags")
+    module = models.CharField(max_length=40)
+    enabled = models.BooleanField(default=True)
+    config = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ("school", "module")
+        ordering = ["module"]
+
+    def __str__(self):
+        state = "on" if self.enabled else "off"
+        return f"{self.school.name} · {self.module} ({state})"
+
+
+def get_setting(key, school_id=None, default=None):
+    """Effective value for a key: academy override first, then platform default."""
+    if school_id is not None:
+        row = AcademySetting.objects.filter(school_id=school_id, key=key).first()
+        if row is not None:
+            return row.value
+    row = AcademySetting.objects.filter(school__isnull=True, key=key).first()
+    return default if row is None else row.value
 
 
 class AcademyAchievement(models.Model):

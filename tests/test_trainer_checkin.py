@@ -62,3 +62,73 @@ def test_checkin_other_coach_session_forbidden(checkin_setup):
     c.force_authenticate(checkin_setup["user"])
     r = c.post("/api/coaches/checkins/", {"session": checkin_setup["other_session"].pk}, format="json")
     assert r.status_code == 403
+
+
+@pytest.mark.django_db
+def test_coach_can_correct_own_checkin(checkin_setup):
+    from apps.coaches.models import TrainerCheckIn
+    c = APIClient()
+    c.force_authenticate(checkin_setup["user"])
+    r = c.post("/api/coaches/checkins/",
+               {"session": checkin_setup["session"].pk, "status": "absent"}, format="json")
+    assert r.status_code == 201, r.content
+    cid = r.data["id"]
+    r2 = c.patch(f"/api/coaches/checkins/{cid}/", {"status": "present"}, format="json")
+    assert r2.status_code == 200, r2.content
+    assert r2.data["status"] == "present"
+    assert TrainerCheckIn.objects.get(pk=cid).status == "present"
+
+
+@pytest.mark.django_db
+def test_coach_cannot_edit_other_coachs_checkin(checkin_setup):
+    from apps.coaches.models import Coach, TrainerCheckIn
+    other = Coach.objects.get(trainer_id="K-T2")
+    rec = TrainerCheckIn.objects.create(coach=other, session=checkin_setup["other_session"], status="present")
+    c = APIClient()
+    c.force_authenticate(checkin_setup["user"])
+    r = c.patch(f"/api/coaches/checkins/{rec.pk}/", {"status": "absent"}, format="json")
+    assert r.status_code in (403, 404)
+
+
+@pytest.mark.django_db
+def test_admin_lists_checkins_with_coach_name_and_date_filter(checkin_setup):
+    from apps.accounts.models import Permission, Role, User
+    from apps.coaches.models import Coach, TrainerCheckIn
+    TrainerCheckIn.objects.create(coach=Coach.objects.get(trainer_id="K-T1"),
+                                  session=checkin_setup["session"], status="present")
+    role, _ = Role.objects.get_or_create(name="att_admin")
+    role.permissions.add(*Permission.objects.filter(code__in=["coaches.view"]))
+    admin = User.objects.create_user(username="att_admin", password="pass12345", role=role)
+    c = APIClient()
+    c.force_authenticate(admin)
+    today = checkin_setup["session"].date.isoformat()
+    r = c.get("/api/coaches/checkins/", {"date_from": today, "date_to": today})
+    assert r.status_code == 200, r.content
+    row = r.data["results"][0]
+    assert row["coach_name"] == "Kiran"
+    assert row["trainer_id"] == "K-T1"
+    assert row["session_date"] == today
+    # A date window that excludes the session returns nothing.
+    empty = c.get("/api/coaches/checkins/", {"date_from": "2000-01-01", "date_to": "2000-01-02"})
+    assert empty.data["results"] == []
+
+
+@pytest.mark.django_db
+def test_admin_checkin_list_is_school_scoped(checkin_setup):
+    from apps.academy.models import School
+    from apps.accounts.models import Permission, Role, User
+    from apps.coaches.models import Coach, TrainerCheckIn
+    a = School.objects.create(name="TA Academy", code="TAA")
+    b = School.objects.create(name="TB Academy", code="TAB")
+    sess = checkin_setup["session"]
+    sess.batch.school = a
+    sess.batch.save(update_fields=["school"])
+    TrainerCheckIn.objects.create(coach=Coach.objects.get(trainer_id="K-T1"), session=sess, status="present")
+    role, _ = Role.objects.get_or_create(name="ta_admin")
+    role.permissions.add(*Permission.objects.filter(code__in=["coaches.view"]))
+    ua = User.objects.create_user(username="ta_admin_a", password="pass12345", role=role, school=a)
+    ub = User.objects.create_user(username="ta_admin_b", password="pass12345", role=role, school=b)
+    ca = APIClient(); ca.force_authenticate(ua)
+    cb = APIClient(); cb.force_authenticate(ub)
+    assert len(ca.get("/api/coaches/checkins/").data["results"]) == 1
+    assert cb.get("/api/coaches/checkins/").data["results"] == []

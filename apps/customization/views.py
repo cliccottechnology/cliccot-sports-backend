@@ -413,8 +413,12 @@ class CustomizationRequestViewSet(GranularPermissions, viewsets.ModelViewSet):
     @action(detail=False, methods=["get"])
     def assignees(self, request):
         from apps.accounts.models import User
+        from apps.common.scope import user_school_id
         qs = User.objects.filter(is_active=True).filter(
             Q(is_superuser=True) | Q(role__name__in=["super_admin", "academy_admin"])).distinct()
+        sid = user_school_id(request.user)
+        if sid is not None:
+            qs = qs.filter(school_id=sid)
         data = [{"id": u.pk, "username": u.username,
                  "role": getattr(u.role, "name", "")} for u in qs[:200]]
         return Response(data)

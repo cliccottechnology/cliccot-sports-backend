@@ -48,6 +48,11 @@ class HasPerm(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
+        module = getattr(view, "module", None) or getattr(view, "perm_module", None)
+        if module:
+            from apps.common.modules import module_enabled
+            if not module_enabled(user, module):
+                return False
         if user.is_superuser:
             return True
         held = set(user.role.permissions.values_list("code", flat=True)) if getattr(user, "role", None) else set()
