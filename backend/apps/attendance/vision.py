@@ -56,9 +56,17 @@ class PilotVisionProvider(BaseVisionProvider):
     def analyze(self, image_file, roster_student_ids: list[int],
                 session=None) -> AnalysisResult:
         from apps.students.models import StudentReferencePhoto
-        with_ref = set(StudentReferencePhoto.objects.filter(
+        candidates = StudentReferencePhoto.objects.filter(
             student_id__in=roster_student_ids, is_active=True, consent_given=True
-        ).values_list("student_id", flat=True))
+        )
+        with_ref = set()
+        for ref in candidates:
+            if ref.image:
+                try:
+                    if ref.image.storage.exists(ref.image.name):
+                        with_ref.add(ref.student_id)
+                except Exception:
+                    pass
 
         suggestions = []
         for sid in roster_student_ids:
