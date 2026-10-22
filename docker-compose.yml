@@ -1,0 +1,25 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: jetz_db
+      POSTGRES_USER: jetz_user
+      POSTGRES_PASSWORD: change-me
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    depends_on: [db]
+    ports:
+      - "8000:8000"
+    command: sh -c "python manage.py migrate && python manage.py seed_demo && gunicorn config.wsgi:application --bind 0.0.0.0:8000"
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"
+volumes:
+  pgdata:

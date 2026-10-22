@@ -1,0 +1,3 @@
+# Database
+PostgreSQL, normalized. Key tables: accounts_user/role/permission, academy sport/category/location/session_type/setting, students_student/document/enrollment, parents_parent/studentparent, coaches_coach/sport/availability/assignment, batches_batch/student, sessions_session/student, attendance_record/correction (unique session+student), fees_plan/studentfee/adjustment (unique student+plan+period), payments_payment (unique receipt/idempotency)/refund, whatsapp_template/message, trainer rule/payable (one per session)/payment/adjustment, notifications, auditlog, documents.
+Indexes on status/date/FKs; see models.py per app.

@@ -1,10 +1,20 @@
+node_modules/
+dist/
 __pycache__/
 *.py[cod]
 *$py.class
 *.log
 .env
+.expo/
 media/
 staticfiles/
+pgdata/
 .pytest_cache/
 index_session.py
 
+# Build/app archives (large binaries; keep out of git)
+*.zip
+
+# Nested app repos / placeholders
+cliccot-mobileapp-trainer/
+cliccot-mobile-trainer-app/

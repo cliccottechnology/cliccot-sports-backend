@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "JETZ Trainer App",
+    "slug": "jetz-trainer-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.jetz.trainerapp"
+    },
+    "plugins": [
+      "expo-status-bar"
+    ],
+    "experiments": {
+      "tsconfigPaths": false
+    }
+  }
+}

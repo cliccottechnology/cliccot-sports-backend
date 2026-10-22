@@ -1,0 +1,412 @@
+{
+  "info": {
+    "_postman_id": "7b8e51b3-f09c-4ec1-9f94-attendance-api",
+    "name": "JETZ Academy - Attendance Module API",
+    "description": "Complete Postman collection for the JETZ Sports Academy Attendance API endpoints, including session rosters, bulk marking, AI photo analysis, and corrections audit trail.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "sessionId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "studentId",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "recordId",
+      "value": "1",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Authentication",
+      "item": [
+        {
+          "name": "Login (Obtain Token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.access) {",
+                  "    pm.collectionVariables.set('token', jsonData.access);",
+                  "    pm.environment.set('token', jsonData.access);",
+                  "    console.log('JWT Token successfully stored.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"Jetz@123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login/",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "login", ""]
+            },
+            "description": "Authenticate as Admin or Coach to acquire the JWT Bearer access token. The test script automatically populates the `token` collection variable."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1. Attendance Core",
+      "item": [
+        {
+          "name": "List Attendance Records (/attendance/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/attendance/?session={{sessionId}}&status=&search=&page=1&page_size=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", ""],
+              "query": [
+                {
+                  "key": "session",
+                  "value": "{{sessionId}}",
+                  "description": "Filter by session ID"
+                },
+                {
+                  "key": "status",
+                  "value": "",
+                  "description": "Filter by status: present, absent, late, leave, not_marked"
+                },
+                {
+                  "key": "search",
+                  "value": "",
+                  "description": "Search by student name or student ID"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Get paginated attendance records with optional filters for session, student, and status. Permission: `attendance.view`."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Single Attendance Record (/attendance/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {{sessionId}},\n  \"student\": {{studentId}},\n  \"status\": \"present\",\n  \"makeup_for\": null\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/attendance/",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", ""]
+            },
+            "description": "Mark attendance for a single student in a session. Student must belong to the session roster. Statuses: present, absent, late, leave, not_marked. Permission: `attendance.mark`."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Attendance Record by ID (/attendance/:id/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/attendance/{{recordId}}/",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", "{{recordId}}", ""]
+            },
+            "description": "Retrieve specific attendance record details including who marked it and when. Permission: `attendance.view`."
+          },
+          "response": []
+        },
+        {
+          "name": "Correct / Update Attendance Record (/attendance/:id/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"present\",\n  \"reason\": \"Student arrived late but attended full drills\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/attendance/{{recordId}}/",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", "{{recordId}}", ""]
+            },
+            "description": "Correct an existing attendance record. Status change requires a non-empty `reason` and permission `attendance.correct`. Automatically generates an entry in AttendanceCorrection audit trail."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Session Roster (/attendance/roster/)",
+      "item": [
+        {
+          "name": "Get Session Roster (/attendance/roster/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/attendance/roster/?session={{sessionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", "roster", ""],
+              "query": [
+                {
+                  "key": "session",
+                  "value": "{{sessionId}}",
+                  "description": "Mandatory session primary key"
+                }
+              ]
+            },
+            "description": "Mobile-optimized fast path returning all enrolled students in a session along with their current status, photo, reference photo enrollment flag, and attribution (marked_by, marked_at). Permission: `attendance.view`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Bulk Mark Attendance (/attendance/bulk_mark/)",
+      "item": [
+        {
+          "name": "Bulk Mark Session (/attendance/bulk_mark/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session\": {{sessionId}},\n  \"reason\": \"Routine session roll call\",\n  \"items\": [\n    {\n      \"student\": 1,\n      \"status\": \"present\",\n      \"makeup_for\": null\n    },\n    {\n      \"student\": 2,\n      \"status\": \"absent\",\n      \"makeup_for\": null\n    },\n    {\n      \"student\": 3,\n      \"status\": \"late\",\n      \"makeup_for\": null\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/attendance/bulk_mark/",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", "bulk_mark", ""]
+            },
+            "description": "Mark or update attendance for all students in a session in a single transactional request. Idempotent per (session, student). Permission: `attendance.mark`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Photo / Vision Attendance (/attendance/photo_analyze/)",
+      "item": [
+        {
+          "name": "Analyze Session Group Photo (/attendance/photo_analyze/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "session",
+                  "value": "{{sessionId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "photo",
+                  "type": "file",
+                  "description": "Session group photo (JPEG/PNG/WEBP, min 320x320, max 10MB)"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/attendance/photo_analyze/",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", "photo_analyze", ""]
+            },
+            "description": "Upload a session group photo for AI face detection / presence suggestions. Stored as audit evidence. Does NOT directly mark attendance—returns suggestions for coach confirmation before calling `bulk_mark`. Permission: `attendance.mark`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Attendance Corrections Audit (/attendance/corrections/)",
+      "item": [
+        {
+          "name": "List Attendance Corrections (/attendance/corrections/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/attendance/corrections/?record={{recordId}}&record__session={{sessionId}}&page=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", "corrections", ""],
+              "query": [
+                {
+                  "key": "record",
+                  "value": "{{recordId}}",
+                  "description": "Filter by AttendanceRecord ID"
+                },
+                {
+                  "key": "record__session",
+                  "value": "{{sessionId}}",
+                  "description": "Filter by Session ID"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                }
+              ]
+            },
+            "description": "Read-only audit trail of all attendance corrections, displaying previous status, new status, change reason, and the user who made the correction. Permission: `attendance.view`."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Attendance Correction Details (/attendance/corrections/:id/)",
+          "request": {
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/attendance/corrections/1/",
+              "host": ["{{baseUrl}}"],
+              "path": ["attendance", "corrections", "1", ""]
+            },
+            "description": "Get detailed audit record of a specific correction entry. Permission: `attendance.view`."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

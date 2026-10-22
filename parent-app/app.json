@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "JETZ Parent App",
+    "slug": "jetz-parent-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.jetz.parentapp"
+    },
+    "plugins": [
+      "expo-status-bar"
+    ],
+    "experiments": {
+      "tsconfigPaths": false
+    }
+  }
+}
