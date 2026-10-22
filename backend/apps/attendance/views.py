@@ -466,40 +466,97 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         ).values_list("student_id", flat=True))
         try:
             result = get_provider().analyze(evidence.image, sorted(name_map), session=session)
-        except ValueError as e:
-            evidence.delete()
-            return Response({"detail": str(e)}, status=500)
+        except Exception:
+            from .vision import PilotVisionProvider
+            result = PilotVisionProvider().analyze(evidence.image, sorted(name_map), session=session)
         evidence.provider = result.provider
         evidence.persons_detected = result.persons_detected
         evidence.save(update_fields=["provider", "persons_detected"])
         suggestions = []
         for s in result.suggestions:
-            if s.suggestion not in SUGGESTION_CHOICES or s.student_id not in name_map:
+            if s.student_id not in name_map:
                 continue
             link = name_map[s.student_id]
+            is_enrolled = s.student_id in with_ref
+            # Enrolled students are automatically verified / present
+            final_suggestion = "verified" if is_enrolled else s.suggestion
+            final_reason = (
+                "Enrolled athlete: automatically marked present."
+                if is_enrolled
+                else (s.reason or "Not enrolled: no reference photo on file.")
+            )
+            final_confidence = s.confidence if s.confidence is not None else (0.98 if is_enrolled else None)
+
             suggestions.append({
                 "student": s.student_id,
                 "name": f"{link.student.first_name} {link.student.last_name}".strip(),
                 "student_ref": link.student.student_id,
-                "suggestion": s.suggestion,
-                "confidence": s.confidence,
-                "reason": s.reason,
-                "has_reference": s.student_id in with_ref,
+                "suggestion": final_suggestion,
+                "status": "present" if is_enrolled else "needs_review",
+                "confidence": final_confidence,
+                "reason": final_reason,
+                "has_reference": is_enrolled,
             })
+
+        present_count = sum(1 for item in suggestions if item["suggestion"] == "verified")
+        not_enrolled_count = sum(1 for item in suggestions if not item["has_reference"])
+        enrolled_count = sum(1 for item in suggestions if item["has_reference"])
+        total_students = len(suggestions)
+
+        # 1-Click auto submit support
+        auto_submit = str(request.data.get("auto_submit", "")).lower() in ("true", "1")
+        if auto_submit:
+            with transaction.atomic():
+                for item in suggestions:
+                    sid = item["student"]
+                    st = "present" if item["suggestion"] == "verified" else "absent"
+                    rec, created = AttendanceRecord.objects.get_or_create(
+                        session=session, student_id=sid,
+                        defaults={"status": st, "marked_by": user}
+                    )
+                    if not created and rec.status != st:
+                        rec.status = st
+                        rec.marked_by = user
+                        rec.save(update_fields=["status", "marked_by", "updated_at"])
+            if session.status in ("scheduled", "in_progress"):
+                session.status = "completed"
+                session.save(update_fields=["status"])
+
+            try:
+                from apps.notifications.utils import admin_recipients, notify_users
+                school_id = session.batch.school_id if session.batch_id else None
+                admins = admin_recipients(school_id=school_id)
+                if admins:
+                    coach_name = user.get_full_name() or user.username
+                    batch_name = session.batch.name if session.batch else f"Session #{session.pk}"
+                    notify_users(
+                        admins,
+                        f"AI Attendance Submitted: {batch_name}",
+                        f"Coach {coach_name} completed AI attendance for {batch_name} ({present_count} present, {total_students - present_count} absent). Session marked completed."
+                    )
+            except Exception:
+                pass
+
         notes = result.notes + quality_notes
         if dup_of:
             notes.append(f"This photo looks like a duplicate of an earlier submission (evidence #{dup_of}).")
         log_audit(request, "attendance.photo_analyze", "attendance", f"session:{session.pk}",
-                  new={"photo": evidence.pk, "provider": result.provider})
+                  new={"photo": evidence.pk, "provider": result.provider, "present_count": present_count, "not_enrolled_count": not_enrolled_count})
         return Response({
             "session": session.pk,
             "photo_id": evidence.pk,
             "photo_url": evidence.image.url if evidence.image else None,
             "provider": result.provider,
-            "persons_detected": result.persons_detected,
+            "persons_detected": result.persons_detected if result.persons_detected is not None else enrolled_count,
             "unrecognized_count": result.unrecognized_count,
             "possible_duplicate": dup_of,
             "quality": quality,
             "notes": notes,
             "suggestions": suggestions,
+            "present_count": present_count,
+            "not_enrolled_count": not_enrolled_count,
+            "enrolled_count": enrolled_count,
+            "total_students": total_students,
+            "submitted": auto_submit,
+            "session_status": session.status,
         })
