@@ -63,7 +63,9 @@ def classify_observation(obs, owner_by_face, cfg):
     base = {"student_key": owner, "similarity": top["similarity"],
             "box": obs.get("box")}
     for other in matches[1:]:
-        if (owner_by_face.get(other["face_id"]) != owner
+        other_owner = owner_by_face.get(other["face_id"])
+        if (other_owner is not None
+                and other_owner != owner
                 and top["similarity"] - other["similarity"] < cfg["ambiguity_margin"]):
             return {**base, "kind": REVIEW, "reason": "AMBIGUOUS"}
     if obs.get("flags"):

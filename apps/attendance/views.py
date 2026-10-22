@@ -102,6 +102,15 @@ def _notify_parents_present(records):
         for parent_id in parents_by_student.get(student.pk, []):
             for user in users_by_parent.get(parent_id, []):
                 notices.append(Notification(user=user, title="Attendance: present", message=message))
+                phone = getattr(user, "phone_number", None) or getattr(user, "phone", None)
+                if phone:
+                    try:
+                        from apps.whatsapp.provider import get_provider as get_wa_provider
+                        wa = get_wa_provider()
+                        if wa.is_configured():
+                            wa.send(to_number=phone, body=f"{student.first_name} has arrived and is marked present{when}.")
+                    except Exception:
+                        pass
     if notices:
         Notification.objects.bulk_create(notices)
     return len(notices)
@@ -486,27 +495,41 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 continue
             link = name_map[s.student_id]
             is_enrolled = s.student_id in with_ref
-            # Enrolled students are automatically verified / present
-            final_suggestion = "verified" if is_enrolled else s.suggestion
-            final_reason = (
-                "Enrolled athlete: automatically marked present."
-                if is_enrolled
-                else (s.reason or "Not enrolled: no reference photo on file.")
-            )
-            final_confidence = s.confidence if s.confidence is not None else (0.98 if is_enrolled else None)
+
+            if not is_enrolled:
+                final_suggestion = "needs_review"
+                final_status = "needs_review"
+                final_confidence = None
+                final_reason = "Not enrolled: no reference photo on file."
+            elif s.suggestion == "verified":
+                final_suggestion = "verified"
+                final_status = "present"
+                final_confidence = s.confidence or 0.98
+                final_reason = s.reason or "Auto-matched from group photo."
+            elif s.suggestion == "not_detected":
+                final_suggestion = "not_detected"
+                final_status = "absent"
+                final_confidence = None
+                final_reason = "Enrolled athlete not seen in photo (absent candidate)."
+            else:
+                final_suggestion = "needs_review"
+                final_status = "needs_review"
+                final_confidence = s.confidence
+                final_reason = s.reason or "Confirm presence against group photo."
 
             suggestions.append({
                 "student": s.student_id,
                 "name": f"{link.student.first_name} {link.student.last_name}".strip(),
                 "student_ref": link.student.student_id,
                 "suggestion": final_suggestion,
-                "status": "present" if is_enrolled else "needs_review",
+                "status": final_status,
                 "confidence": final_confidence,
                 "reason": final_reason,
                 "has_reference": is_enrolled,
             })
 
         present_count = sum(1 for item in suggestions if item["suggestion"] == "verified")
+        absent_count = sum(1 for item in suggestions if item["suggestion"] == "not_detected")
         not_enrolled_count = sum(1 for item in suggestions if not item["has_reference"])
         enrolled_count = sum(1 for item in suggestions if item["has_reference"])
         total_students = len(suggestions)
@@ -562,6 +585,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             "notes": notes,
             "suggestions": suggestions,
             "present_count": present_count,
+            "absent_count": absent_count,
             "not_enrolled_count": not_enrolled_count,
             "enrolled_count": enrolled_count,
             "total_students": total_students,
