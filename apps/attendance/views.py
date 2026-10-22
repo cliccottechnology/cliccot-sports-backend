@@ -450,7 +450,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             return Response({"detail": "No students are enrolled in this session's batch yet. "
                                        "Add athletes to the batch, then try again."}, status=400)
         evidence = AttendancePhotoEvidence.objects.create(
-            session=session, provider=getattr(dj_settings, "ATTENDANCE_VISION_PROVIDER", "pilot"),
+            session=session, provider=getattr(dj_settings, "ATTENDANCE_VISION_PROVIDER", "faceauth"),
             width=width, height=height, uploaded_by=user,
             image=ContentFile(raw, name=getattr(photo, "name", "session-photo.jpg")),
         )
@@ -485,30 +485,21 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             except Exception:
                 if bool(ref.image.name):
                     with_ref.add(ref.student_id)
-        configured_provider = str(getattr(dj_settings, "ATTENDANCE_VISION_PROVIDER", "pilot")).lower()
         try:
             result = get_provider().analyze(raw, sorted(name_map), session=session)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).exception("Face analysis failed: %s", exc)
-            if configured_provider == "pilot":
-                # Pilot is the configured provider: its deterministic result is
-                # the intended behaviour, so replay it directly.
-                from .vision import PilotVisionProvider
-                result = PilotVisionProvider().analyze(raw, sorted(name_map), session=session)
-            else:
-                # A real face-matching provider raised (e.g. AWS unreachable,
-                # credentials/collection missing, rate-limited). Falling back to
-                # the pilot stub here would fabricate a result that marks EVERY
-                # enrolled athlete present without inspecting the photo. Fail
-                # closed and surface a clear error instead.
-                evidence.delete()
-                return Response(
-                    {"detail": "Face recognition could not analyse this photo. "
-                               "No attendance was changed. Check the recognition "
-                               "service and try again."},
-                    status=502,
-                )
+            # AWS face recognition raised (unreachable, credentials/collection
+            # missing, rate-limited). Never fabricate a result: fail closed and
+            # surface a clear error so no athlete is marked from a broken run.
+            evidence.delete()
+            return Response(
+                {"detail": "Face recognition could not analyse this photo. "
+                           "No attendance was changed. Check the recognition "
+                           "service and try again."},
+                status=502,
+            )
         evidence.provider = result.provider
         evidence.persons_detected = result.persons_detected
         evidence.save(update_fields=["provider", "persons_detected"])

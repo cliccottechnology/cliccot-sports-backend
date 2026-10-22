@@ -28,7 +28,7 @@ class FaceauthConfig(AppConfig):
         from django.conf import settings
 
         msg = "Photo-attendance vision provider=%s (face engine=%s)" % (
-            getattr(settings, "ATTENDANCE_VISION_PROVIDER", "pilot"),
+            getattr(settings, "ATTENDANCE_VISION_PROVIDER", "faceauth"),
             getattr(settings, "FACE_VERIFICATION_PROVIDER", "none"),
         )
         print(msg, flush=True)

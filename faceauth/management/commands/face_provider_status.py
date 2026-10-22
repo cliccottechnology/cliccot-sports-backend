@@ -20,7 +20,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from apps.attendance.vision import get_provider
 
-        vision = getattr(settings, "ATTENDANCE_VISION_PROVIDER", "pilot")
+        vision = getattr(settings, "ATTENDANCE_VISION_PROVIDER", "faceauth")
         face = getattr(settings, "FACE_VERIFICATION_PROVIDER", "none")
         self.stdout.write(f"ATTENDANCE_VISION_PROVIDER = {vision}")
         self.stdout.write(f"FACE_VERIFICATION_PROVIDER = {face}")

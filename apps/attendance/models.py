@@ -36,12 +36,12 @@ class AttendanceCorrection(models.Model):
 class AttendancePhotoEvidence(models.Model):
     """Group photo submitted for AI-assisted attendance (audit evidence).
 
-    The image is kept for review/audit. No biometric templates are derived
-    or stored by the pilot provider.
+    The image is kept for review/audit. Biometric templates are only derived
+    from consented reference photos, never from this group photo.
     """
     session = models.ForeignKey("training_sessions.Session", on_delete=models.CASCADE, related_name="photo_evidence")
     image = models.ImageField(upload_to="attendance/%Y/%m/")
-    provider = models.CharField(max_length=30, default="pilot")
+    provider = models.CharField(max_length=30, default="faceauth")
     persons_detected = models.IntegerField(null=True, blank=True)
     width = models.IntegerField(null=True, blank=True)
     height = models.IntegerField(null=True, blank=True)

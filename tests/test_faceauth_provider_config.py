@@ -1,8 +1,9 @@
 """Config/selection tests for the photo-attendance vision provider.
 
-They lock in that `faceauth` is really wired to a real face engine, that the
-startup check flags a misconfigured deployment instead of silently degrading to
-the pilot provider, and that AWS collection creation is idempotent.
+They lock in that `faceauth` is the only provider and is really wired to a real
+face engine, and that the startup check flags a misconfigured deployment
+instead of silently degrading. They also cover idempotent AWS collection
+creation.
 """
 import pytest
 
@@ -49,11 +50,12 @@ def _run_check(settings, **overrides):
     return attendance_vision_provider_check(None)
 
 
-def test_get_provider_returns_pilot_by_default(settings):
+def test_get_provider_raises_for_unknown_provider(settings):
     from apps.attendance.vision import get_provider
 
     settings.ATTENDANCE_VISION_PROVIDER = "pilot"
-    assert get_provider().name == "pilot"
+    with pytest.raises(ValueError):
+        get_provider()
 
 
 @pytest.mark.django_db
@@ -82,13 +84,6 @@ def test_check_passes_for_faceauth_with_aws(settings):
     issues = attendance_vision_provider_check(None)
     # Only warnings (missing region/creds) are acceptable; never an error.
     assert not [i for i in issues if i.id.startswith("faceauth.E")]
-
-
-def test_check_ok_for_pilot(settings):
-    from faceauth.checks import attendance_vision_provider_check
-
-    settings.ATTENDANCE_VISION_PROVIDER = "pilot"
-    assert attendance_vision_provider_check(None) == []
 
 
 def test_check_flags_unknown_provider(settings):
