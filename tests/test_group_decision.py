@@ -132,8 +132,9 @@ def test_student_without_face_is_absent_candidate():
     result = run([[obs(matches=[{"face_id": "F1", "similarity": 99.5}])]])
     assert result["students"]["2"]["status"] == "ABSENT"
     assert result["students"]["2"]["reason_code"] == "NOT_SEEN"
-    assert result["unknown_faces"] == [{"frame": 0, "box": pytest.ANY,
-                                        "reason_code": "NO_MATCH"}]
+    assert len(result["unknown_faces"]) == 1
+    assert result["unknown_faces"][0]["frame"] == 0
+    assert result["unknown_faces"][0]["reason_code"] == "NO_MATCH"
 
 
 def test_student_with_no_reference_photo_is_never_auto_marked():

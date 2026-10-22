@@ -1,8 +1,6 @@
-import logging
-
 from django.apps import AppConfig
 
-logger = logging.getLogger(__name__)
+_logged = False
 
 
 class FaceauthConfig(AppConfig):
@@ -14,12 +12,23 @@ class FaceauthConfig(AppConfig):
         # Registers the provider configuration system checks (see checks.py).
         from . import checks  # noqa: F401
 
-        # Make the active provider visible in the server log so a silently
-        # "pilot" deployment is obvious at startup.
+        global _logged
+        import os
+        import sys
+
+        if _logged:
+            return
+        if 'runserver' in sys.argv and os.environ.get('RUN_MAIN') != 'true':
+            # Let the reloader child handle printing to avoid duplicate on startup
+            _logged = True
+            return
+
+        _logged = True
+
         from django.conf import settings
 
-        logger.info(
-            "Photo-attendance vision provider=%s (face engine=%s)",
+        msg = "Photo-attendance vision provider=%s (face engine=%s)" % (
             getattr(settings, "ATTENDANCE_VISION_PROVIDER", "pilot"),
             getattr(settings, "FACE_VERIFICATION_PROVIDER", "none"),
         )
+        print(msg, flush=True)

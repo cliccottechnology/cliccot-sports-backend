@@ -217,6 +217,9 @@ class SessionViewSet(GranularPermissions, viewsets.ModelViewSet):
             return [HasAnyPerm("sessions.edit", "attendance.correct", "attendance.mark")]
         if action == "validate_for_fee":
             return [HasPerm("trainer_fees.verify")]
+        if action == "change_status":
+            from rest_framework.permissions import IsAuthenticated
+            return [IsAuthenticated()]
         return super().get_permissions()
 
     def _resolved(self, serializer, field):
@@ -488,12 +491,27 @@ class SessionViewSet(GranularPermissions, viewsets.ModelViewSet):
         ser = self.get_serializer(qs, many=True)
         return Response(ser.data)
 
-    @action(detail=True, methods=["post"], permission_classes=[HasPerm("sessions.manage")])
+    @action(detail=True, methods=["post"])
     def change_status(self, request, pk=None):
+        from rest_framework.exceptions import PermissionDenied
         session = self.get_object()
+        user = request.user
         new_status = request.data.get("status")
         if new_status not in dict([("scheduled", ""), ("in_progress", ""), ("completed", ""), ("cancelled", "")]):
             return Response({"detail": "Invalid status."}, status=400)
+
+        # Admins may set any status. Assigned coach may update between scheduled, in_progress, and completed.
+        is_assigned_coach = (
+            user.is_authenticated
+            and getattr(getattr(user, "role", None), "name", None) == "coach"
+            and user.coach_profile_id == session.coach_id
+        )
+        can_manage = user.is_superuser or user.has_perm_code("sessions.manage") or user.has_perm_code("sessions.edit")
+        if not can_manage:
+            if not is_assigned_coach:
+                raise PermissionDenied("You can only change status for your own assigned sessions.")
+            if new_status == "cancelled":
+                raise PermissionDenied("Only administrators can cancel a session.")
         # Re-check conflicts when a cancelled session is being revived, since
         # its slot/time may already be taken by another live session.
         if new_status in services.LIVE_STATUSES and session.status not in services.LIVE_STATUSES:
@@ -517,6 +535,21 @@ class SessionViewSet(GranularPermissions, viewsets.ModelViewSet):
         session.status = new_status
         session.save(update_fields=["status"])
         log_audit(request, "session.status", "sessions", f"session:{session.pk}", old={"status": old}, new={"status": new_status})
+
+        if new_status == "completed" and old != "completed":
+            try:
+                from apps.notifications.utils import admin_recipients, notify_users
+                school_id = session.batch.school_id if session.batch_id else None
+                admins = admin_recipients(school_id=school_id)
+                if admins:
+                    coach_name = user.get_full_name() or user.username
+                    batch_name = session.batch.name if session.batch else f"Session #{session.pk}"
+                    title = f"Session Completed: {batch_name}"
+                    message = f"Coach {coach_name} marked {batch_name} on {session.date} as completed."
+                    notify_users(admins, title, message)
+            except Exception:
+                pass
+
         return Response(self.get_serializer(session).data)
 
     @action(detail=True, methods=["post"])
