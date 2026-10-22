@@ -129,7 +129,7 @@ def test_confident_clean_face_is_present():
 
 
 def test_student_without_face_is_absent_candidate():
-    result = run([[obs(matches=[{"face_id": "F1", "similarity": 99.5}])]])
+    result = run([[obs(), obs(matches=[{"face_id": "F1", "similarity": 99.5}])]])
     assert result["students"]["2"]["status"] == "ABSENT"
     assert result["students"]["2"]["reason_code"] == "NOT_SEEN"
     assert len(result["unknown_faces"]) == 1
