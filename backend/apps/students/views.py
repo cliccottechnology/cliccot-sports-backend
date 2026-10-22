@@ -290,6 +290,12 @@ class StudentReferencePhotoViewSet(viewsets.ModelViewSet):
         if obj.consent_given and not obj.consented_at:
             obj.consented_at = timezone.now()
             obj.save(update_fields=["consented_at"])
+        if obj.consent_given and obj.is_active:
+            try:
+                from faceauth.enrollment import index_student_faces
+                index_student_faces([student.pk], student.school_id)
+            except Exception:
+                pass
         log_audit(self.request, "student.refphoto_enroll", "students", f"student:{student.pk}",
                   new={"photo": obj.pk, "consent": obj.consent_given})
 

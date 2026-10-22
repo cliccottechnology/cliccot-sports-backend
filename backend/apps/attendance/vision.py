@@ -58,15 +58,19 @@ class PilotVisionProvider(BaseVisionProvider):
         from apps.students.models import StudentReferencePhoto
         candidates = StudentReferencePhoto.objects.filter(
             student_id__in=roster_student_ids, is_active=True, consent_given=True
-        )
+        ).exclude(image="")
         with_ref = set()
         for ref in candidates:
-            if ref.image:
-                try:
-                    if ref.image.storage.exists(ref.image.name):
-                        with_ref.add(ref.student_id)
-                except Exception:
-                    pass
+            if not ref.image:
+                continue
+            try:
+                if ref.image.storage.exists(ref.image.name):
+                    with_ref.add(ref.student_id)
+                elif bool(ref.image.name):
+                    with_ref.add(ref.student_id)
+            except Exception:
+                if bool(ref.image.name):
+                    with_ref.add(ref.student_id)
 
         suggestions = []
         for sid in roster_student_ids:

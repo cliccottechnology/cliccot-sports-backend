@@ -23,6 +23,8 @@ _SUGGESTION_BY_STATUS = {"PRESENT": "verified", "ABSENT": "not_detected"}
 
 
 def _read_bytes(image_file):
+    if isinstance(image_file, (bytes, bytearray)):
+        return bytes(image_file)
     if hasattr(image_file, "read"):
         try:
             image_file.seek(0)
