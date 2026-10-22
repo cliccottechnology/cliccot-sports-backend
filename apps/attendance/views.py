@@ -459,11 +459,19 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                     break
             except ValueError:
                 continue
-        # Reference-photo enrollment status per roster student.
+        # Reference-photo enrollment status per roster student (verifies file exists).
         from apps.students.models import StudentReferencePhoto
-        with_ref = set(StudentReferencePhoto.objects.filter(
+        candidates = StudentReferencePhoto.objects.filter(
             student_id__in=list(name_map), is_active=True, consent_given=True
-        ).values_list("student_id", flat=True))
+        )
+        with_ref = set()
+        for ref in candidates:
+            if ref.image:
+                try:
+                    if ref.image.storage.exists(ref.image.name):
+                        with_ref.add(ref.student_id)
+                except Exception:
+                    pass
         try:
             result = get_provider().analyze(evidence.image, sorted(name_map), session=session)
         except Exception:
