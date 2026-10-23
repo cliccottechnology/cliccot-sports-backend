@@ -151,11 +151,13 @@ class Command(BaseCommand):
         # Unlink coaches and parents from users before deleting them
         User.objects.all().update(coach_profile=None, parent_profile=None)
 
-        # Delete students, parents, coaches
+        # Delete students, parents, coaches, sports
         Student.objects.all().delete()
         Parent.objects.all().delete()
         Coach.objects.all().delete()
-        self.stdout.write("Cleared students, parents, and coaches.")
+        from apps.academy.models import Sport
+        Sport.objects.all().delete()
+        self.stdout.write("Cleared students, parents, coaches, and sports.")
 
         # Miscellaneous
         Notification.objects.all().delete()
@@ -241,19 +243,6 @@ class Command(BaseCommand):
             name="HARI Sports Academy",
             defaults={"code": "HARI-MAIN"}
         )
-
-        # Ensure standard sports
-        sports_data = [
-            ("Football", "FB"),
-            ("Cricket", "CR"),
-            ("Basketball", "BB"),
-            ("Skating", "SK"),
-            ("Badminton", "BD"),
-            ("Tennis", "TN"),
-            ("Swimming", "SW"),
-        ]
-        for name, code in sports_data:
-            Sport.objects.get_or_create(name=name, defaults={"code": code})
 
         # Ensure default location & session type
         TrainingLocation.objects.get_or_create(name="Main Ground")
