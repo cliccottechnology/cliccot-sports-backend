@@ -103,25 +103,46 @@ function migrateLegacy(portal: Portal) {
 
 export function getAccess(portal: Portal = activePortal()): string | null {
   migrateLegacy(portal);
-  return localStorage.getItem(keysFor(portal).access);
+  const token = localStorage.getItem(keysFor(portal).access);
+  if (token) return token;
+  if (portal === 'admin') return localStorage.getItem(keysFor('super').access);
+  if (portal === 'super') return localStorage.getItem(keysFor('admin').access);
+  return null;
 }
 
 export function getRefresh(portal: Portal = activePortal()): string | null {
   migrateLegacy(portal);
-  return localStorage.getItem(keysFor(portal).refresh);
+  const token = localStorage.getItem(keysFor(portal).refresh);
+  if (token) return token;
+  if (portal === 'admin') return localStorage.getItem(keysFor('super').refresh);
+  if (portal === 'super') return localStorage.getItem(keysFor('admin').refresh);
+  return null;
 }
 
 export function readUser<T = any>(portal: Portal = activePortal()): T | null {
   migrateLegacy(portal);
   try {
-    return JSON.parse(localStorage.getItem(keysFor(portal).user) || 'null');
+    const raw = localStorage.getItem(keysFor(portal).user);
+    if (raw) return JSON.parse(raw);
+    if (portal === 'admin') {
+      const superUser = localStorage.getItem(keysFor('super').user);
+      if (superUser) return JSON.parse(superUser);
+    }
+    if (portal === 'super') {
+      const adminUser = localStorage.getItem(keysFor('admin').user);
+      if (adminUser) return JSON.parse(adminUser);
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
 export function setUser(user: unknown, portal: Portal = activePortal()) {
-  localStorage.setItem(keysFor(portal).user, JSON.stringify(user));
+  const json = JSON.stringify(user);
+  localStorage.setItem(keysFor(portal).user, json);
+  if (portal === 'super') localStorage.setItem(keysFor('admin').user, json);
+  if (portal === 'admin') localStorage.setItem(keysFor('super').user, json);
 }
 
 export function setSession(
@@ -130,25 +151,37 @@ export function setSession(
   sessionExp: number | null,
   portal: Portal = activePortal(),
 ) {
-  const k = keysFor(portal);
-  localStorage.setItem(k.access, access);
-  localStorage.setItem(k.refresh, refresh);
-  if (sessionExp) localStorage.setItem(k.exp, String(sessionExp));
-  else localStorage.removeItem(k.exp);
+  const setFor = (p: Portal) => {
+    const k = keysFor(p);
+    localStorage.setItem(k.access, access);
+    localStorage.setItem(k.refresh, refresh);
+    if (sessionExp) localStorage.setItem(k.exp, String(sessionExp));
+    else localStorage.removeItem(k.exp);
+  };
+  setFor(portal);
+  if (portal === 'super') setFor('admin');
+  if (portal === 'admin') setFor('super');
 }
 
 /** Clear ONE portal's session. Other portals (e.g. the teacher's) are untouched. */
 export function clearSession(portal: Portal = activePortal()) {
-  const k = keysFor(portal);
-  localStorage.removeItem(k.access);
-  localStorage.removeItem(k.refresh);
-  localStorage.removeItem(k.exp);
-  localStorage.removeItem(k.user);
+  const clearFor = (p: Portal) => {
+    const k = keysFor(p);
+    localStorage.removeItem(k.access);
+    localStorage.removeItem(k.refresh);
+    localStorage.removeItem(k.exp);
+    localStorage.removeItem(k.user);
+  };
+  clearFor(portal);
+  if (portal === 'super') clearFor('admin');
+  if (portal === 'admin') clearFor('super');
 }
 
 export function getExp(portal: Portal = activePortal()): number | null {
   migrateLegacy(portal);
-  const v = Number(localStorage.getItem(keysFor(portal).exp) || 0);
+  let v = Number(localStorage.getItem(keysFor(portal).exp) || 0);
+  if (!v && portal === 'admin') v = Number(localStorage.getItem(keysFor('super').exp) || 0);
+  if (!v && portal === 'super') v = Number(localStorage.getItem(keysFor('admin').exp) || 0);
   return v > 0 ? v : null;
 }
 
