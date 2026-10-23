@@ -509,6 +509,19 @@ class CoachViewSet(GranularPermissions, viewsets.ModelViewSet):
     def me(self, request):
         """Return the logged-in coach's own record (sports, off-days)."""
         coach_id = getattr(request.user, "coach_profile_id", None)
+        if not coach_id and request.user.is_authenticated:
+            coach = (
+                Coach.objects.filter(login_account=request.user).first()
+                or Coach.objects.filter(email__iexact=request.user.email, email__gt="").first()
+                or Coach.objects.filter(phone=request.user.phone, phone__gt="").first()
+                or Coach.objects.filter(trainer_id__iexact=request.user.username).first()
+            )
+            if not coach and Coach.objects.count() == 1:
+                coach = Coach.objects.first()
+            if coach:
+                request.user.coach_profile = coach
+                request.user.save(update_fields=["coach_profile"])
+                coach_id = coach.id
         if not coach_id:
             return Response({"detail": "No coach profile linked to this account."}, status=404)
         try:

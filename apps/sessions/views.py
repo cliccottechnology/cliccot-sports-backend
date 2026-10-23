@@ -196,6 +196,20 @@ class SessionViewSet(GranularPermissions, viewsets.ModelViewSet):
         user = self.request.user
         # Trainers see only assigned sessions
         if user.is_authenticated and not user.is_superuser and getattr(user, "role", None) and user.role.name == "coach":
+            if not user.coach_profile_id:
+                from apps.coaches.models import Coach
+                coach = (
+                    Coach.objects.filter(login_account=user).first()
+                    or Coach.objects.filter(email__iexact=user.email, email__gt="").first()
+                    or Coach.objects.filter(phone=user.phone, phone__gt="").first()
+                    or Coach.objects.filter(trainer_id__iexact=user.username).first()
+                    or Coach.objects.filter(first_name__iexact=user.first_name, last_name__iexact=user.last_name).first()
+                )
+                if not coach and Coach.objects.count() == 1:
+                    coach = Coach.objects.first()
+                if coach:
+                    user.coach_profile = coach
+                    user.save(update_fields=["coach_profile"])
             if user.coach_profile_id:
                 qs = qs.filter(coach_id=user.coach_profile_id)
             else:

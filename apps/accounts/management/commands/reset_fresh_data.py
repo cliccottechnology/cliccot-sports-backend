@@ -248,6 +248,25 @@ class Command(BaseCommand):
         TrainingLocation.objects.get_or_create(name="Main Ground")
         SessionType.objects.get_or_create(name="Regular")
 
+        # Sports are a required FK on batches and sessions. The wipe above
+        # removes them, so without this the Batches form can never submit.
+        sports = {
+            "Cricket": "CRK",
+            "Football": "FBL",
+            "Basketball": "BSK",
+            "Badminton": "BDM",
+            "Tennis": "TNS",
+            "Volleyball": "VBL",
+            "Athletics": "ATH",
+            "Swimming": "SWM",
+            "Hockey": "HKY",
+            "Table Tennis": "TTN",
+        }
+        for name, code in sports.items():
+            if Sport.objects.filter(name__iexact=name).exists():
+                continue
+            Sport.objects.get_or_create(code=code, defaults={"name": name})
+
         # WhatsApp templates
         WhatsAppTemplate.objects.get_or_create(
             name="fee_reminder",
