@@ -592,7 +592,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             "photo_id": evidence.pk,
             "photo_url": evidence.image.url if evidence.image else None,
             "provider": result.provider,
-            "persons_detected": result.persons_detected if result.persons_detected is not None else enrolled_count,
+            "persons_detected": result.persons_detected if result.persons_detected is not None else 0,
             "unrecognized_count": result.unrecognized_count,
             "possible_duplicate": dup_of,
             "quality": quality,

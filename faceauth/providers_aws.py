@@ -421,11 +421,43 @@ class AWSRekognitionProvider(FaceProvider):
 
         client = self._client()
         prepared = _prepare_group_image(image_bytes)
-        faces = client.detect_faces(
+        img = Image.open(io.BytesIO(prepared)).convert("RGB")
+        W, H = img.size
+
+        raw_faces = client.detect_faces(
             Image={"Bytes": prepared}, Attributes=["ALL"]
         ).get("FaceDetails", [])
+
+        # Strict validation of detected faces:
+        # Prevents false-positive detections from objects, electrical sockets,
+        # screws, wall artifacts, and blurred reflections on curved bottles/flasks.
+        valid_faces = []
+        for face in raw_faces:
+            conf = float(face.get("Confidence", 0.0))
+            if conf < 85.0:
+                continue
+
+            bb = face.get("BoundingBox", {})
+            w_px = int(bb.get("Width", 0.0) * W)
+            h_px = int(bb.get("Height", 0.0) * H)
+            if w_px < 40 or h_px < 40:
+                continue
+
+            landmarks = {lm.get("Type"): lm for lm in face.get("Landmarks", [])}
+            has_eyes = "eyeLeft" in landmarks and "eyeRight" in landmarks
+            has_nose = "nose" in landmarks
+            has_mouth = "mouthLeft" in landmarks or "mouthRight" in landmarks
+            if not (has_eyes and has_nose and has_mouth):
+                continue
+
+            q = face.get("Quality", {})
+            if float(q.get("Sharpness", 100.0)) < 15.0:
+                continue
+
+            valid_faces.append(face)
+
         faces = sorted(
-            faces, key=lambda f: f["BoundingBox"]["Width"] * f["BoundingBox"]["Height"],
+            valid_faces, key=lambda f: f["BoundingBox"]["Width"] * f["BoundingBox"]["Height"],
             reverse=True,
         )[:max_faces]
         if not faces:
@@ -442,8 +474,6 @@ class AWSRekognitionProvider(FaceProvider):
             logger.warning("Group DetectLabels skipped: %s", exc)
 
         collection = self._collection(company_id, scope)
-        img = Image.open(io.BytesIO(prepared)).convert("RGB")
-        W, H = img.size
         not_found = getattr(client.exceptions, "ResourceNotFoundException", ())
 
         def work(face):
