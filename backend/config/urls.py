@@ -9,7 +9,7 @@ def health(_request):
     return JsonResponse({
         "status": "ok",
         "service": "jetz-backend",
-        "vision_provider": getattr(settings, "ATTENDANCE_VISION_PROVIDER", "pilot"),
+        "vision_provider": getattr(settings, "ATTENDANCE_VISION_PROVIDER", "faceauth"),
         "face_engine": getattr(settings, "FACE_VERIFICATION_PROVIDER", "none"),
     })
 

@@ -80,13 +80,25 @@ ASGI_APPLICATION = "config.asgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("DB_NAME", "jetz_db"),
-        "USER": os.environ.get("DB_USER", "jetz_user"),
-        "PASSWORD": os.environ.get("DB_PASSWORD", "change-me"),
-        "HOST": os.environ.get("DB_HOST", "localhost"),
-        "PORT": os.environ.get("DB_PORT", "5432"),
+        "NAME": os.getenv("DB_NAME", "sports_db"),
+        "USER": os.getenv("DB_USER"),
+        "PASSWORD": os.getenv("DB_PASSWORD"),
+        "HOST": os.getenv("DB_HOST"),
+        "PORT": os.getenv("DB_PORT", "5432"),
     }
 }
+
+
+# DATABASES = {
+#     "default": {
+#         "ENGINE": "django.db.backends.postgresql",
+#         "NAME": os.environ.get("DB_NAME", "jetz_db"),
+#         "USER": os.environ.get("DB_USER", "jetz_user"),
+#         "PASSWORD": os.environ.get("DB_PASSWORD", "change-me"),
+#         "HOST": os.environ.get("DB_HOST", "localhost"),
+#         "PORT": os.environ.get("DB_PORT", "5432"),
+#     }
+# }
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -172,21 +184,20 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 
-# Photo-attendance vision provider (pilot = evidence + coach-confirmed review;
-# faceauth = AWS Rekognition matching against consented student reference
-# photos; swap without changing the API contract).
-ATTENDANCE_VISION_PROVIDER = os.environ.get("ATTENDANCE_VISION_PROVIDER", "pilot")
+# Photo-attendance vision provider: AWS Rekognition face matching against
+# consented student reference photos. This is the only supported provider.
+ATTENDANCE_VISION_PROVIDER = os.environ.get("ATTENDANCE_VISION_PROVIDER", "faceauth")
 
 # Face-group (student) matching thresholds used by faceauth's decision engine.
-# A face is auto-suggested "present" only at/above FACE_GROUP_MATCH_THRESHOLD;
-# between REVIEW and MATCH the coach must confirm; below REVIEW it is ignored.
+# A face is auto-marked Present only at/above FACE_GROUP_MATCH_THRESHOLD; an
+# enrolled athlete whose face is not detected is auto-marked Absent.
 FACE_GROUP_MATCH_THRESHOLD = float(os.environ.get("FACE_GROUP_MATCH_THRESHOLD", "90"))
 FACE_GROUP_REVIEW_THRESHOLD = float(os.environ.get("FACE_GROUP_REVIEW_THRESHOLD", "80"))
 FACE_GROUP_AMBIGUITY_MARGIN = float(os.environ.get("FACE_GROUP_AMBIGUITY_MARGIN", "3"))
 
 # Face matching engine (AWS Rekognition). boto3 reads the AWS credentials from
 # the environment directly; these settings drive collection naming/thresholds.
-FACE_VERIFICATION_PROVIDER = os.environ.get("FACE_VERIFICATION_PROVIDER", "none")
+FACE_VERIFICATION_PROVIDER = os.environ.get("FACE_VERIFICATION_PROVIDER", "aws")
 AWS_REGION = os.environ.get("AWS_REGION", "")
 AWS_LIVENESS_REGION = os.environ.get("AWS_LIVENESS_REGION", "") or AWS_REGION
 AWS_REKOGNITION_COLLECTION_PREFIX = os.environ.get("AWS_REKOGNITION_COLLECTION_PREFIX", "")

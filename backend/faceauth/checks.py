@@ -6,12 +6,12 @@ cloud is temporarily unreachable. For a live connectivity probe run
 ``python manage.py face_provider_status --check-aws``.
 
 The point is to make the active provider impossible to get silently wrong:
-if attendance is pointed at ``faceauth`` but no real face engine is
-configured, Django reports it instead of quietly returning "pilot" results.
+attendance must be pointed at ``faceauth`` with a real face engine configured,
+otherwise Django reports it instead of serving a fabricated result.
 """
 from django.core.checks import Error, Warning, register
 
-_KNOWN_VISION = {"pilot", "faceauth"}
+_KNOWN_VISION = {"faceauth"}
 _REAL_FACE_ENGINES = {"aws", "mock", "sandbox", "test"}
 
 
@@ -20,15 +20,13 @@ def attendance_vision_provider_check(app_configs, **kwargs):
     from django.conf import settings
 
     issues = []
-    vision = str(getattr(settings, "ATTENDANCE_VISION_PROVIDER", "pilot") or "pilot")
+    vision = str(getattr(settings, "ATTENDANCE_VISION_PROVIDER", "faceauth") or "faceauth")
     if vision not in _KNOWN_VISION:
         issues.append(Error(
             f"ATTENDANCE_VISION_PROVIDER={vision!r} is not a known provider "
             f"(expected one of: {', '.join(sorted(_KNOWN_VISION))}).",
             id="faceauth.E001",
         ))
-        return issues
-    if vision != "faceauth":
         return issues
 
     face = str(getattr(settings, "FACE_VERIFICATION_PROVIDER", "none") or "none").lower()

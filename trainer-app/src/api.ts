@@ -184,7 +184,10 @@ export type AttRecord = {
 const listOf = (d: any): any[] => (Array.isArray(d) ? d : d?.results || []);
 
 export async function login(username: string, password: string) {
-  const { data } = await api.post('/auth/login/', { username, password });
+  // Trainer-app login is role-scoped server-side; admins and parents are
+  // rejected here with a clear message instead of signing in and then having
+  // every coach-only request fail.
+  const { data } = await api.post('/auth/trainer/login/', { username, password });
   return data as { access: string; refresh: string; user: Me };
 }
 export async function health(): Promise<boolean> {

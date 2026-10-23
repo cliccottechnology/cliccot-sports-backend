@@ -1,4 +1,4 @@
-"""Tests for AI-assisted photo attendance endpoint (pilot provider)."""
+"""Tests for AI-assisted photo attendance endpoint (faceauth provider)."""
 from datetime import date, time
 
 import pytest
@@ -45,16 +45,17 @@ def coach_setup():
 
 
 @pytest.mark.django_db
-def test_photo_analyze_pilot_defers_to_coach(coach_setup):
+def test_photo_analyze_reports_needs_review_without_references(coach_setup):
     client = APIClient()
     client.force_authenticate(coach_setup["user"])
     r = client.post("/api/attendance/photo_analyze/",
                     {"session": coach_setup["session"].pk, "photo": _photo()}, format="multipart")
     assert r.status_code == 200, r.content
-    assert r.data["provider"] == "pilot"
+    assert r.data["provider"] == "faceauth"
     assert len(r.data["suggestions"]) == 2
-    # Pilot must never auto-verify: everything needs coach review.
+    # No enrolled reference photos: nobody can be matched, so nobody is marked.
     assert {s["suggestion"] for s in r.data["suggestions"]} == {"needs_review"}
+    assert all(s["has_reference"] is False for s in r.data["suggestions"])
     assert r.data["photo_id"] is not None
     # No attendance records written by analysis.
     from apps.attendance.models import AttendanceRecord

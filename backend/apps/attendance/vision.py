@@ -1,15 +1,14 @@
 """Pluggable vision provider for AI-assisted photo attendance.
 
-Privacy design (pilot phase):
-- No biometric templates are enrolled or stored. The service never claims to
-  identify a student from pixels alone.
-- The default ``pilot`` provider validates the group photo, stores it as
-  audit evidence, and returns every roster student as ``needs_review`` so a
-  coach must explicitly confirm each athlete. It never auto-marks present.
-- A future provider (face recognition against consented enrollment photos,
-  head-count estimation, etc.) can implement :class:`BaseVisionProvider` and
-  be selected via the ``ATTENDANCE_VISION_PROVIDER`` setting without changing
-  the API contract.
+Privacy design:
+- Only consented reference photos are indexed as biometric templates.
+- The provider matches faces in the group photo against those enrolled
+  templates (AWS Rekognition via the ``faceauth`` provider).
+- A face that matches an enrolled roster athlete -> ``verified`` (Present).
+- An enrolled athlete whose face is NOT found in the photo -> ``not_detected``
+  (Absent).
+- An athlete with no consented reference photo cannot be compared -> they are
+  never marked and are only reported as a not-enrolled count.
 """
 from dataclasses import dataclass, field
 
@@ -48,56 +47,6 @@ class BaseVisionProvider:
         raise NotImplementedError
 
 
-class PilotVisionProvider(BaseVisionProvider):
-    """AI Attendance Provider: Enrolled students are automatically marked Present."""
-
-    name = "pilot"
-
-    def analyze(self, image_file, roster_student_ids: list[int],
-                session=None) -> AnalysisResult:
-        from apps.students.models import StudentReferencePhoto
-        candidates = StudentReferencePhoto.objects.filter(
-            student_id__in=roster_student_ids, is_active=True, consent_given=True
-        ).exclude(image="")
-        with_ref = set()
-        for ref in candidates:
-            if not ref.image:
-                continue
-            try:
-                if ref.image.storage.exists(ref.image.name):
-                    with_ref.add(ref.student_id)
-                elif bool(ref.image.name):
-                    with_ref.add(ref.student_id)
-            except Exception:
-                if bool(ref.image.name):
-                    with_ref.add(ref.student_id)
-
-        suggestions = []
-        for sid in roster_student_ids:
-            is_enrolled = sid in with_ref
-            suggestions.append(
-                StudentSuggestion(
-                    student_id=sid,
-                    suggestion="verified" if is_enrolled else "needs_review",
-                    confidence=0.98 if is_enrolled else None,
-                    reason="Enrolled athlete: automatically marked present." if is_enrolled else "Not enrolled: no reference photo on file.",
-                )
-            )
-        return AnalysisResult(
-            provider=self.name,
-            persons_detected=len(with_ref),
-            suggestions=suggestions,
-            unrecognized_count=0,
-            notes=[
-                f"AI Attendance: {len(with_ref)} enrolled athletes automatically marked present. "
-                f"{len(roster_student_ids) - len(with_ref)} not enrolled.",
-            ],
-        )
-
-
-_PROVIDERS = {"pilot": PilotVisionProvider}
-
-
 def dhash_hex(image, size: int = 8) -> str:
     """Perceptual difference-hash (Pillow only, no numpy). Returns 16 hex chars."""
     gray = image.convert("L").resize((size + 1, size))
@@ -114,13 +63,19 @@ def hamming_hex(a: str, b: str) -> int:
 
 
 def get_provider() -> BaseVisionProvider:
-    name = getattr(settings, "ATTENDANCE_VISION_PROVIDER", "pilot")
+    """Return the face-matching provider.
+
+    AWS Rekognition (``faceauth``) is the only supported provider for AI
+    attendance. Any other value fails closed with a clear error rather than
+    silently returning a fabricated result.
+    """
+    name = str(getattr(settings, "ATTENDANCE_VISION_PROVIDER", "faceauth") or "faceauth")
     if name == "faceauth":
-        # Imported lazily so the AWS deps (boto3/numpy) are only required when
-        # real face matching is actually switched on.
+        # Imported lazily so the AWS deps (boto3/numpy) are only required for
+        # this provider.
         from faceauth.attendance_provider import FaceVisionProvider
         return FaceVisionProvider()
-    cls = _PROVIDERS.get(name)
-    if cls is None:
-        raise ValueError(f"Unknown ATTENDANCE_VISION_PROVIDER: {name!r}")
-    return cls()
+    raise ValueError(
+        f"Unknown ATTENDANCE_VISION_PROVIDER: {name!r}. "
+        "Set ATTENDANCE_VISION_PROVIDER=faceauth."
+    )

@@ -8,16 +8,15 @@ const FINAL = ['present', 'absent', 'late', 'leave'] as const;
 const FINAL_LABEL: Record<string, string> = { present: 'P', absent: 'A', late: 'L', leave: 'E' };
 
 function defaultFor(s: Analysis['suggestions'][number]): string {
-  // SAAPT matching rules — never punish an athlete for missing evidence:
-  // 1. Face recognized in photo -> Auto-mark Present
+  // AI attendance rules (AWS Rekognition face matching):
+  // 1. Enrolled athlete whose face IS matched in the photo -> Present.
   if (s.suggestion === 'verified') return 'present';
-  // 2. Enrolled athlete whose face WAS searched and not seen -> Absent candidate.
-  //    Only a real negative (a reference photo exists to compare against) may
-  //    become absent; this is still just a default the coach can override.
+  // 2. Enrolled athlete whose face is NOT found in the photo -> Absent.
+  //    Only an athlete with a consented reference photo can be compared, so
+  //    only they can be auto-marked absent.
   if (s.has_reference && s.suggestion === 'not_detected') return 'absent';
-  // 3. No reference photo (never compared) or uncertain review -> leave Not
-  //    Marked. Absence can only be asserted for an athlete the AI could
-  //    actually compare; everyone else needs the trainer's manual call.
+  // 3. No reference photo (never enrolled / cannot be compared) -> stay Not
+  //    Marked; the coach sets them manually. They are only counted.
   return 'not_marked';
 }
 
@@ -191,10 +190,15 @@ export default function ReviewScreen({
     try {
       const items = analysis.suggestions.map((s) => ({
         student: s.student,
-        // Fall back to the same evidence-based default, never a blanket absent.
+        // Fall back to the same evidence-based default.
         status: finals[s.student] || defaultFor(s),
       }));
-      await bulkMark(session.id, items);
+      const res = await bulkMark(session.id, items);
+      const failed = (res?.results || []).filter((x: any) => x.error);
+      if (failed.length) {
+        setErr(`${failed.length} record(s) rejected (${failed[0].error}). The rest were saved.`);
+        return;
+      }
       onDone();
     } catch (e: any) {
       setErr(e?.response?.data?.message || e?.message || "Couldn't save attendance.");
@@ -235,7 +239,7 @@ export default function ReviewScreen({
                 1-Click Attendance Ready
               </Text>
               <Sub style={{ color: C.text }}>
-                Matched faces marked Present. Unmatched enrolled athletes marked Absent.
+                Matched faces marked Present. Enrolled athletes not seen in the photo marked Absent.
                 {notMarkedCount > 0
                   ? ` ${notMarkedCount} without a reference photo stay Not Marked — set them below.`
                   : ''}
@@ -337,8 +341,8 @@ export default function ReviewScreen({
         {/* 2. Absent Candidates */}
         {absentCandidates.length > 0 ? (
           <Group
-            title="Absent Candidates · Not in Photo"
-            hint="Enrolled reference photo on file, but face was not detected in this photo."
+            title="Absent · Not in Photo"
+            hint="Enrolled reference photo on file, but no matching face was seen in this photo. Marked Absent — change it if that's wrong."
             color={C.red}
             items={absentCandidates}
             finals={finals}
@@ -366,7 +370,7 @@ export default function ReviewScreen({
           kind="accent"
         />
         <Sub style={{ textAlign: 'center', marginTop: S.sm }}>
-          Athletes left Not Marked are saved as pending — never as absent. Submitting finalizes the session, notifies Admin, and sends parent arrival notices.
+          Athletes without a reference photo stay Not Marked (saved as pending). Submitting finalizes the session, notifies Admin, and sends parent arrival notices.
         </Sub>
       </ScrollView>
     </View>
